@@ -1,0 +1,133 @@
+Identified 7 input nodes and 2 output nodes.
+Mapping nodes to HGNC symbols ...
+Nodes mapped to HGNC symbols successfully
+Getting missing nodes ...
+Number of missing nodes: 15
+Missing nodes: ['Apoptosis', 'BAK', 'BCL2_rna', 'BIRC5_rna', 'CyclinB_CDK1', 'CyclinD_CDK4_6', 'CyclinE_CDK2', 'E2F', 'ERK_f', 'FGFR', 'MEK_f', 'Proliferation', 'RPS6K_f', 'mTOR_c1', 'mTOR_c2']
+Keeping original node symbol if no HGNC symbol is found ...
+Original node symbol kept for missing HGNC symbols
+Manual override applied for node: CDKN1A -> ['CDKN1A', 'CDPF1']
+Manual override applied for node: CyclinB_CDK1 -> ['CCNB1', 'CDK1']
+Manual override applied for node: CyclinD_CDK4_6 -> ['CCND1', 'CDK4', 'CDK6']
+Manual override applied for node: CyclinE_CDK2 -> ['CCNE1', 'CDK2']
+Manual override applied for node: ERK_f -> ['MAPK1', 'MAPK3']
+Manual override applied for node: MEK_f -> ['MAP2K1', 'MAP2K2']
+Manual override applied for node: mTOR_c1 -> ['AKT1S1', 'DEPTOR', 'MLST8', 'RPTOR', 'MTOR']
+Manual override applied for node: mTOR_c2 -> ['EEF1A1', 'DEPTOR', 'MLST8', 'PRR5', 'RICTOR', 'MTOR']
+Data saved to consensus\oneil_results\node_HGNC_dict.csv as CSV.
+Data saved to consensus/oneil_results\activity_master_matrix.csv as CSV.
+Data saved to consensus/oneil_results\activity_from_master.csv as CSV.
+VERBOSE LOG MESSAGES
+------------------------------------------------------
+ACTIVITY MATRIX RUN REPORT
+------------------------------------------------------
+
+VARIABLES
+
+Selected sources: ['mutations', 'cnv', 'TF']
+
+Command: c:/Users/viviamsb/OneDrive - NTNU/PhD Folder/Pipeline/CELIOS/tests/celios_oneil.py
+Run time (seconds): 35.95
+
+NODE DICTIONARY
+
+Length of node dictionary: 63
+
+Node dictionary entries:
+AKT1: ['AKT1']
+APAF1: ['APAF1']
+APC: ['APC']
+AXIN1: ['AXIN1']
+Apoptosis: ['Apoptosis']
+BAD: ['BAD']
+BAK: ['BAK']
+BAX: ['BAX']
+BCL2: ['BCL2']
+BCL2L1: ['BCL2L1']
+BCL2L11: ['BCL2L11']
+BCL2_rna: ['BCL2_rna']
+BID: ['BID']
+BIRC5: ['BIRC5']
+BIRC5_rna: ['BIRC5_rna']
+BRAF: ['BRAF']
+CASP3: ['CASP3']
+CASP9: ['CASP9']
+CCND1: ['CCND1']
+CDC25A: ['CDC25A']
+CDKN1A: ['CDKN1A', 'CDPF1']
+CDKN1B: ['CDKN1B']
+CDKN2A: ['CDKN2A']
+CREB1: ['CREB1']
+CTNNB1: ['CTNNB1']
+CYCS: ['CYCS']
+CyclinB_CDK1: ['CCNB1', 'CDK1']
+CyclinD_CDK4_6: ['CCND1', 'CDK4', 'CDK6']
+CyclinE_CDK2: ['CCNE1', 'CDK2']
+DIABLO: ['DIABLO']
+E2F: ['E2F']
+EGFR: ['EGFR']
+ERBB2: ['ERBB2']
+ERK_f: ['MAPK1', 'MAPK3']
+FGFR: ['FGFR']
+FOS: ['FOS']
+FOXO3: ['FOXO3']
+GSK3B: ['GSK3B']
+IGF1R: ['IGF1R']
+IRS2: ['IRS2']
+JUN: ['JUN']
+KRAS: ['KRAS']
+LEF1: ['LEF1']
+LRP5: ['LRP5']
+MAP2K4: ['MAP2K4']
+MAP3K1: ['MAP3K1']
+MAPK8: ['MAPK8']
+MDM2: ['MDM2']
+MEK_f: ['MAP2K1', 'MAP2K2']
+MET: ['MET']
+MYC: ['MYC']
+PIK3CA: ['PIK3CA']
+PORCN: ['PORCN']
+PTEN: ['PTEN']
+Proliferation: ['Proliferation']
+RB1: ['RB1']
+RPS6K_f: ['RPS6K_f']
+SMAD3: ['SMAD3']
+STAT3: ['STAT3']
+TP53: ['TP53']
+XIAP: ['XIAP']
+mTOR_c1: ['AKT1S1', 'DEPTOR', 'MLST8', 'RPTOR', 'MTOR']
+mTOR_c2: ['EEF1A1', 'DEPTOR', 'MLST8', 'PRR5', 'RICTOR', 'MTOR']
+
+Nodes with missing HGNC_symbol entries: 0
+
+CELL LINES / SIDM LIST
+
+SIDM count: 5
+
+SIDM list (ordered):
+SIDM00787
+SIDM00640
+SIDM01002
+SIDM00683
+SIDM00071
+
+Cell line names (SIDM -> name):
+SIDM00787: DLD1
+SIDM00640: MSTO
+SIDM01002: EFM192B
+SIDM00683: LNCAP
+SIDM00071: COLO320DM
+
+TRAINING TRAINING DATA
+
+raw_shape: (37602, 1431)
+prep_shape: (37602, 4)
+norm_shape: (37602, 4)
+muts_shape: (524, 2)
+cnv_shape: (18163, 3)
+tfm_shape: (0, 5)
+
+Master matrix saved: consensus/oneil_results\activity_master_matrix.csv (shape=(63, 16))
+Final activity saved: consensus/oneil_results\activity_from_master.csv (shape=(63, 6))
+
+Nodes with all-missing values in final matrix: 0
