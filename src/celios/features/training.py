@@ -164,6 +164,18 @@ class ActivityMatrix:
 
     def _ensure_sidm(self):
         """Ensure `self.sidm_list` and `self.sidm_dict` are populated from `cell_line_file`.
+        
+        Resolution order (Priority 1 to 2):
+          1. Explicit SIDM column: If cell_line_file contains both 'SIDM' and 'cell_line_name' columns,
+             use those directly (backward compatible with existing user configs).
+          2. Model.csv lookup: If no explicit SIDM column, use the bundled Model.csv registry to match
+             cell-line names. This approach is immune to changes in activity file format.
+        
+        Returns:
+            tuple: (sidm_list, sidm_dict) where sidm_dict maps SIDM -> cell_line_name
+        
+        Raises:
+            ValueError: If cell_line_file is not provided or no SIDM mappings can be found.
         """
         if self.sidm_list is not None and self.sidm_dict is not None:
             return self.sidm_list, self.sidm_dict
@@ -172,57 +184,34 @@ class ActivityMatrix:
         self._log("Loading cell line file: %s", self.cell_line_file)
         df = load_csv_file(self.cell_line_file)
 
-        # Case 1: explicit SIDM mapping present (existing behaviour)
+        # Case 1: explicit SIDM mapping present (backward compatible)
         if "SIDM" in df.columns and "cell_line_name" in df.columns:
             self.sidm_list = df["SIDM"].tolist()
             self.sidm_dict = dict(zip(df["SIDM"], df["cell_line_name"]))
-            self._log("Found %s SIDM entries", len(self.sidm_list))
+            self._log("Found %s SIDM entries from explicit cell_line_file columns", len(self.sidm_list))
             return self.sidm_list, self.sidm_dict
 
-        # Case 2: only cell_line_name present -> try to infer SIDM from activity file
+        # Case 2: only cell_line_name present -> use Model.csv lookup (new, stable approach)
         if "cell_line_name" in df.columns:
             names = df["cell_line_name"].astype(str).tolist()
-
-            def _norm(x):
-                # normalize by uppercasing and removing non-alphanumeric characters
-                return re.sub(r'[^A-Za-z0-9]', '', str(x).upper()).strip()
-
-            name_to_sidms = {}
+            
             try:
-                if self.activity_raw_df is None:
-                    try:
-                        self._load_activity_raw()
-                    except Exception:
-                        pass
-                if self.activity_raw_df is not None and isinstance(self.activity_raw_df.columns, pd.MultiIndex):
-                    for sidm, cname in self.activity_raw_df.columns.tolist():
-                        key = _norm(cname)
-                        name_to_sidms.setdefault(key, []).append(str(sidm))
-            except Exception:
-                name_to_sidms = {}
-
-            sidms = []
-            sidm_map = {}
-            not_found = []
-            for cname in names:
-                key = _norm(cname)
-                matched = name_to_sidms.get(key)
-                if matched:
-                    # if multiple SIDMs match the normalized name, pick the first and warn
-                    sidm = matched[0]
-                    if len(matched) > 1 and self.verbose:
-                        self._log("Multiple SIDMs found for cell_line_name '%s': %s. Using '%s'", cname, matched, sidm)
-                    sidms.append(sidm)
-                    sidm_map[sidm] = cname
-                else:
-                    not_found.append(cname)
-
+                from celios.utils.io import load_sidm_from_model_csv
+                sidm_dict, not_found = load_sidm_from_model_csv(names, verbose=self.verbose)
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to load SIDM mapping from Model.csv: {e}. "
+                    "Please provide a 'SIDM' column in your cell_line_file as a fallback."
+                ) from e
+            
+            # Handle unmatched cell lines
             if not_found:
                 # Report the problematic cell lines but continue processing
                 warning_msg = (
                     "WARNING: Could not find SIDM mapping for %d cell line(s): %s\n"
                     "These cell lines will be excluded from the analysis.\n"
-                    "To include them, provide a `cell_line_file` with `SIDM` column or ensure `activity_file` contains matching names."
+                    "To include them, ensure the cell line names match entries in the CELIOS Model.csv registry,\n"
+                    "or provide a 'SIDM' column explicitly in your cell_line_file."
                     % (len(not_found), ", ".join(not_found))
                 )
                 print("=" * 80)
@@ -230,20 +219,14 @@ class ActivityMatrix:
                 print("=" * 80)
                 if self.verbose:
                     logger.warning(warning_msg)
-
-            if not sidms:
-                # If no valid SIDMs were found at all, we cannot continue
-                raise ValueError(
-                    "No valid SIDM mappings found for any cell lines. "
-                    "Please check your cell_line_file and activity_file."
-                )
-
-            self.sidm_list = sidms
-            self.sidm_dict = sidm_map
-            self._log("Inferred %s SIDM entries from activity file (excluded %s)", len(self.sidm_list), len(not_found))
+            
+            sidm_list = list(sidm_dict.keys())
+            self.sidm_list = sidm_list
+            self.sidm_dict = sidm_dict
+            self._log("Resolved %s SIDM entries from Model.csv (excluded %s)", len(self.sidm_list), len(not_found))
             return self.sidm_list, self.sidm_dict
 
-        raise ValueError("cell_line_file must contain 'SIDM' and 'cell_line_name' columns")
+        raise ValueError("cell_line_file must contain 'cell_line_name' column (or 'SIDM' + 'cell_line_name' columns)")
 
     # ------------------------------------------------------------------
     # Expression processing

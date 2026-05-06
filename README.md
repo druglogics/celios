@@ -162,9 +162,17 @@ python -m celios.cli node-from-object --input "TP53,BRCA1,EGFR" --hgnc examples\
 
 ## Installation
 
-### Quick Install
+### Install from PyPI
 
-For a quick setup with minimal steps:
+Once published, install CELIOS directly with:
+
+```bash
+pip install celios
+```
+
+### Development Install
+
+If you are developing CELIOS from a local checkout:
 
 ```bash
 pip install -e .
@@ -176,7 +184,13 @@ For detailed installation instructions, troubleshooting, and virtual environment
 
 Alternatively, run CLI commands from the repository root without installing:
 
-```Architecture & Design
+```bash
+python -m celios.cli run --config path\to\config.yaml --verbose
+```
+
+---
+
+## Architecture & Design
 
 ### Pipeline Overview
 
@@ -197,21 +211,18 @@ The pipeline is entirely controlled via JSON or YAML configuration files, making
 
 See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for detailed code organization and module descriptions.
 
----
-
 ## Notes
 
 - **YAML support** - YAML config files require `pyyaml` in your environment (optional). JSON configs work without extra packages.
   ```bash
   pip install pyyaml
   ```
-- **Example configurations** - See `tests/test_run_celios.py`, `tests/celios_consensus.py`, and `tests/celios_hgsoc.py` for real-world examples
+- **Example configurations** - See `src/tests/test_run_celios.py` and the notebooks for real-world examples
 - **Interactive tutorials** - See `notebooks/1_select_visualize.ipynb` for a step-by-step walkthrough
 - **Project structure** - See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for code organization
 This works as long as you're in the repository directory.
 
-## Notes
+## Release Notes
 
-- YAML config support in the CLI requires `pyyaml` in your environment (optional). JSON configs work without extra packages.
-- See `tests/test_run_celios.py`, `tests/celios_consensus.py`, and `tests/celios_hgsoc.py` for example configurations and usage patterns.
+Maintainers should publish releases through GitHub Actions using the workflow in [.github/workflows/publish.yml](.github/workflows/publish.yml). The recommended path is to publish to TestPyPI first, validate `pip install celios` from that index, and then publish the tagged GitHub release to PyPI.
 

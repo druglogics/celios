@@ -11,13 +11,23 @@ Before installing CELIOS, ensure you have the following installed on your system
 
 ## Installation Steps
 
-### Option A: Development Installation (Recommended)
+### Option A: Install from PyPI
+
+Once CELIOS is published, users can install it directly with:
+
+```bash
+pip install celios
+```
+
+This is the recommended installation path for end users.
+
+### Option B: Development Installation
 
 If you plan to modify the code or develop features, install in editable mode:
 
 ```bash
 # Clone the repository (if not already done)
-git clone https://github.com/yourusername/celios.git
+git clone https://github.com/druglogics/celios.git
 cd CELIOS
 
 # Create a virtual environment (optional but recommended)
@@ -33,7 +43,7 @@ source celios_env/bin/activate
 pip install -e .
 ```
 
-### Option B: Standard Installation
+### Option C: Standard Installation from the Repository
 
 For users who only need to run CELIOS without modifying code:
 
@@ -42,7 +52,7 @@ cd CELIOS
 pip install .
 ```
 
-### Option C: Installation with Development Dependencies
+### Option D: Installation with Development Dependencies
 
 If you want to run tests and use development tools:
 
@@ -53,7 +63,7 @@ pip install -e ".[dev]"
 
 **Note:** Development dependencies (like `pytest`) should be added to `setup.py` as `extras_require`.
 
-### Option D: Using Conda
+### Option E: Using Conda
 
 If you prefer using Conda instead of pip:
 
@@ -80,7 +90,7 @@ Test that CELIOS installed correctly:
 celios --help
 
 # Run the test suite (requires pytest)
-pytest tests/ -v
+pytest src/tests/ -v
 ```
 
 ### 2. Prepare Your Workspace
@@ -112,9 +122,9 @@ celios run --config configs/celios_config.yaml --verbose
 
 | Problem | Cause | Solution |
 |---------|-------|----------|
-| `ModuleNotFoundError: No module named 'celios'` | CELIOS not installed or not on Python path | Install with `pip install -e .` or run from repo root with `python -m celios.cli` |
+| `ModuleNotFoundError: No module named 'celios'` | CELIOS not installed or not on Python path | Install with `pip install celios` or run from repo root with `python -m celios.cli` |
 | `celios: command not found` | Console script not in PATH | Reinstall with `pip install -e .` and ensure virtual environment is activated |
-| `ImportError: No module named 'pandas'` | Missing pandas dependency | Run `pip install pandas` or reinstall CELIOS with `pip install -e .` |
+| `ImportError: No module named 'pandas'` | Missing pandas dependency | Run `pip install pandas` or reinstall CELIOS with `pip install celios` |
 | `No such file or directory: config.yaml` | Configuration file path is incorrect | Verify config path is correct (absolute or relative to current directory) |
 | `Tests fail after installation` | Testing dependencies missing | Install with `pip install -e ".[dev]"` to include pytest and other dev tools |
 | `YAML config not recognized` | PyYAML not installed | Install with `pip install pyyaml` for YAML support (optional; JSON configs work by default) |
@@ -133,8 +143,18 @@ pip uninstall celios
 To upgrade to the latest version:
 
 ```bash
-pip install --upgrade -e .
+pip install --upgrade celios
 ```
+
+## Release Process for Maintainers
+
+CELIOS is intended to be published from GitHub Actions using [trusted publishing](https://docs.pypi.org/trusted-publishers/).
+
+1. Create or edit a GitHub release for the tagged version.
+2. Configure the `celios` project on PyPI and TestPyPI as a trusted publisher for this GitHub repository.
+3. Use the [Publish CELIOS](.github/workflows/publish.yml) workflow to build and publish to TestPyPI first, then verify installation from the TestPyPI index.
+4. Publish the GitHub release to trigger the PyPI upload job.
+5. Validate the live release with `pip install celios` in a clean environment.
 
 ## Next Steps
 

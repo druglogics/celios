@@ -78,3 +78,85 @@ def load_node_dict_from_csv(file_path, verbose=False):
 		report_mod.add_log(f'Loaded node dictionary from {file_path} with {len(node_dict)} nodes.')
 	
 	return node_dict
+
+
+def load_sidm_from_model_csv(cell_line_names, verbose=False):
+	"""Load SIDM (SangerModelID) mapping from the bundled Model.csv file.
+	
+	This function provides an authoritative, stable mapping from cell-line names to
+	SangerModelID values. It does not depend on activity file format, making it
+	immune to changes in upstream data sources.
+	
+	Args:
+		cell_line_names (list): List of cell-line names from user's cell_line_file.
+		verbose (bool): If True, log detailed matching results.
+	
+	Returns:
+		dict: Mapping of SIDM -> cell_line_name for matched cell lines.
+		      Also returns dict with 'matched' and 'not_found' keys if verbose.
+	
+	Raises:
+		FileNotFoundError: If Model.csv is not found in the package.
+		ValueError: If no cell lines from the input list match any in Model.csv.
+	"""
+	import re
+	from pathlib import Path
+	
+	# Locate Model.csv in the package
+	package_dir = Path(__file__).parent.parent / 'features'
+	model_csv_path = package_dir / 'Model.csv'
+	
+	if not model_csv_path.exists():
+		raise FileNotFoundError(
+			f"Model.csv not found at {model_csv_path}. "
+			"Please reinstall celios to ensure the package includes the Model.csv registry."
+		)
+	
+	# Load Model.csv
+	model_df = pd.read_csv(model_csv_path)
+	
+	# Normalization function: uppercase and remove non-alphanumeric
+	def _normalize_name(name):
+		return re.sub(r'[^A-Za-z0-9]', '', str(name).upper()).strip()
+	
+	# Build a lookup map: normalized_name -> (original_name_from_model, sidm)
+	model_lookup = {}
+	for _, row in model_df.iterrows():
+		cell_line = str(row['CellLineName']) if pd.notna(row['CellLineName']) else None
+		sidm = str(row['SangerModelID']) if pd.notna(row['SangerModelID']) else None
+		
+		if cell_line and sidm:
+			normalized = _normalize_name(cell_line)
+			# Store both the original name and SIDM for reference
+			model_lookup[normalized] = {'original_name': cell_line, 'sidm': sidm}
+	
+	# Match input cell-line names against the model lookup
+	sidm_dict = {}  # Maps SIDM -> cell_line_name
+	not_found = []
+	
+	for cname in cell_line_names:
+		normalized = _normalize_name(cname)
+		if normalized in model_lookup:
+			entry = model_lookup[normalized]
+			sidm = entry['sidm']
+			sidm_dict[sidm] = cname  # Use the original input name
+			if verbose:
+				report_mod.add_log(f"Matched '{cname}' -> SIDM {sidm}")
+		else:
+			not_found.append(cname)
+			if verbose:
+				report_mod.add_log(f"No match found for '{cname}' in Model.csv")
+	
+	if not sidm_dict:
+		raise ValueError(
+			f"No cell lines from the provided list could be found in Model.csv. "
+			f"Not found: {', '.join(not_found)}. "
+			f"Please check your cell_line_file names or provide a 'SIDM' column explicitly."
+		)
+	
+	if not_found and verbose:
+		report_mod.add_log(
+			f"Warning: {len(not_found)} cell line(s) not found in Model.csv and will be excluded: {', '.join(not_found)}"
+		)
+	
+	return sidm_dict, not_found
