@@ -57,8 +57,9 @@ config = {
             "directory_output": "results",
         },
         "Activity": {
-            "activity_file": "activity_input/rnaseq_tpm_20220624.csv",
-            "cell_line_file": "activity_input/cell_line_list.csv",
+            "activity_file": "activity_input/rnaseq_tpm_20220624.csv",  # or rnaseq_tpm_coding_genes26Q1.csv
+            "cell_line_file": "vis_2024/cell_line_list.csv",
+            "format_override": None,  # optional: "old" or "26Q1"; None = auto-detect
             "tf_activity_file": "activity_input/ccle_tf_activities.csv",
             "mutations_file": "activity_input/CCLE_muts_binary.csv",
             "cnv_file": "activity_input/CCLE_CNV_binary.csv",
@@ -71,7 +72,20 @@ config = {
 artifacts = run_celios(config=config, plan=False, verbose=True)
 ```
 
-See `tests/test_run_celios.py` and `tests/celios_consensus.py` for additional examples.
+### Activity Input Format Support
+
+CELIOS now supports multiple expression input formats through a strategy-based parser module (`src/celios/features/activity_parser.py`).
+
+Supported activity files:
+- `rnaseq_tpm_20220624.csv` (legacy multi-header format)
+- `rnaseq_tpm_coding_genes26Q1.csv` (26Q1 single-header format)
+
+Behavior:
+- Default is automatic format detection.
+- You can override detection with `steps.Activity.format_override` set to `"old"` or `"26Q1"`.
+- Parsed metadata is included in run reporting.
+
+See `src/tests/test_run_celios.py` and `src/celios/tests/test_activity_parser.py` for examples.
 
 ### Tissue-Organized Output (Optional)
 
@@ -113,7 +127,8 @@ config = {
         "Activity": {
             "node_dic": "hgsoc_net/NODE_HGNC_equivalences.csv",  # Pre-built node dictionary
             "activity_file": "activity_input/rnaseq_tpm_20220624.csv",
-            "cell_line_file": "activity_input/cell_line_list.csv",
+            "cell_line_file": "vis_2024/cell_line_list.csv",
+            "format_override": None,
             "tf_activity_file": "activity_input/ccle_tf_activities.csv",
             "mutations_file": "activity_input/CCLE_muts_binary.csv",
             "cnv_file": "activity_input/CCLE_CNV_binary.csv",
@@ -217,7 +232,7 @@ See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for detailed code organization 
   ```bash
   pip install pyyaml
   ```
-- **Example configurations** - See `src/tests/test_run_celios.py` and the notebooks for real-world examples
+- **Example configurations** - See `src/tests/test_run_celios.py`, `src/celios/tests/test_activity_parser.py`, and the notebooks for real-world examples
 - **Interactive tutorials** - See `notebooks/1_select_visualize.ipynb` for a step-by-step walkthrough
 - **Project structure** - See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for code organization
 This works as long as you're in the repository directory.

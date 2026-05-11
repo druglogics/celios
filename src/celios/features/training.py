@@ -25,6 +25,7 @@ import time
 import re
 
 from celios.utils import activitymatrix_report, save_file, load_csv_file
+from celios.features.activity_parser import FormatDetector, get_parser
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class ActivityMatrix:
         directory_output: Optional[str] = None,
         verbose: bool = False,
         data_sources: List[str] = None,
+        format_override: Optional[str] = None,
     ):
         self.activity_file = activity_file
         self.cell_line_file = cell_line_file
@@ -64,6 +66,7 @@ class ActivityMatrix:
 
         self.directory_output = directory_output
         self.verbose = verbose
+        self.format_override = format_override
 
         self.activity_raw_df: Optional[pd.DataFrame] = None
         self.activity_df: Optional[pd.DataFrame] = None  # gene-level with single header
@@ -81,6 +84,9 @@ class ActivityMatrix:
         # thresholds for TF filtering (kept small & configurable)
         self.p_value_tf_threshold = 0.05
 
+        # Store format metadata from parser
+        self.format_metadata: Optional[Dict] = None
+
     # ------------------------------------------------------------------
     # Helpers to load basic inputs
     # ------------------------------------------------------------------
@@ -93,14 +99,31 @@ class ActivityMatrix:
             logger.debug(*args)
 
     def _load_activity_raw(self):
-        """Load raw activity file into `self.activity_raw_df` using the same multi-header
-        conventions used in the original code.
+        """Load raw activity file using format auto-detection and pluggable parser.
+
+        Supports multiple formats (old, 26Q1, etc.) with automatic detection.
+        Stores the parsed DataFrame and format metadata.
+        
+        Returns:
+            DataFrame with gene symbols as index and SIDM IDs as columns.
         """
         if not self.activity_file:
             raise ValueError("No activity_file provided")
+        
         self._log("Loading activity file: %s", self.activity_file)
-        df = pd.read_csv(self.activity_file, skiprows=(2, 3, 4), header=[0, 1], index_col=[0, 1])
-        df.index = df.index.rename(["gene_id", "symbol"])
+        
+        # Auto-detect or validate format
+        detected_format = FormatDetector.detect(self.activity_file, format_override=self.format_override)
+        self._log("Activity file format: %s", detected_format)
+        
+        # Get appropriate parser and load file
+        parser = get_parser(detected_format, verbose=self.verbose)
+        df, format_metadata = parser.load(self.activity_file)
+        
+        # Store metadata
+        self.format_metadata = format_metadata
+        
+        # Store the parsed DataFrame
         self.activity_raw_df = df
         return self.activity_raw_df
 
@@ -234,25 +257,41 @@ class ActivityMatrix:
     def _prepare_activity_df(self):
         """Create a simplified gene-level DataFrame with index 'symbol' and columns=SIDM IDs.
 
+        This method adapts the parser output (which may have different column structures
+        depending on format) to a normalized form with SIDM columns.
+
         Sets `self.activity_df`.
         """
         if self.activity_raw_df is None:
             self._load_activity_raw()
 
-        # Drop gene_id level from index and collapse header second row
         df = self.activity_raw_df.copy()
-        # make columns single-level using the SIDM column (level 0 is SIDM id)
-        # columns: MultiIndex (SIDM, cell_line_name) -> use first level
-        df.columns = df.columns.droplevel(1)
-        # keep symbol as index
-        df = df.reset_index(level=0, drop=True)  # drop gene_id
-        df.index = df.index.rename("symbol")
 
-        # ensure we have sidm_list
+        # Parser output already has symbol as index
+        # Ensure index is named 'symbol' and values are normalized (uppercase)
+        if df.index.name != "symbol":
+            df.index.name = "symbol"
+        df.index = df.index.astype(str).str.upper()
+
+        # ensure we have sidm_list for filtering
         self._ensure_sidm()
-        # filter columns for SIDMs present
+        
+        # Filter columns for SIDMs present
+        # For old format: columns are already SIDM IDs
+        # For 26Q1 format: columns may be ModelID or SequencingID, but we have SIDM from cell_line_file
         cols = [c for c in df.columns if c in self.sidm_list]
-        df = df.loc[:, cols]
+        
+        if not cols:
+            # If no direct SIDM column match, columns might be in a different format
+            # Log warning and keep all columns for now
+            self._log(
+                "Warning: No columns matched SIDM list. Columns in DataFrame: %s. "
+                "SIDM list: %s. Keeping all columns.",
+                list(df.columns)[:5],
+                self.sidm_list[:5],
+            )
+        else:
+            df = df.loc[:, cols]
 
         self.activity_df = df
         self._log("Prepared activity_df shape: %s", df.shape)
@@ -703,6 +742,7 @@ class ActivityMatrix:
                 'final_fp': final_fp,
                 'final_shape': getattr(final, 'shape', None),
                 'nodes_with_all_missing': nodes_with_all_missing,
+                'format_metadata': self.format_metadata,
             }
             activitymatrix_report(self.directory_output, report_data, verbose=self.verbose)
 
@@ -722,12 +762,16 @@ def extract_omics(
     data_sources: List[str] = None,
     save_master: bool = True,
     make_report: bool = True,
+    format_override: Optional[str] = None,
 ):
     """Public convenience function that runs the ActivityMatrix pipeline.
 
     This is the only symbol exported by this module (see `__all__`).
     It constructs an `ActivityMatrix` and runs the pipeline, returning the final
     selected activity DataFrame.
+
+    Args:
+        format_override: Optional format hint ('old' or '26Q1'). If None, auto-detects format.
     """
     am = ActivityMatrix(
         activity_file=activity_file,
@@ -739,6 +783,7 @@ def extract_omics(
         directory_output=directory_output,
         verbose=verbose,
         data_sources=data_sources,
+        format_override=format_override,
     )
 
     # If node_dict was provided as a path, attempt to load it via helper

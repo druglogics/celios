@@ -25,23 +25,24 @@ paths:
 
 steps:
   Node:
-    node_input: "data/node_dic_input/cell_fate_plus.sif"
-    hgnc_symbols_file: "data/node_dic_input/hgnc_complete_set.txt"
-    manual_symbols_file: "data/node_dic_input/manual_symbols.csv"
+    node_input: "node_dic_input/cell_fate_plus.sif"
+    hgnc_symbols_file: "node_dic_input/hgnc_complete_set.txt"
+    manual_symbols_file: "node_dic_input/manual_symbols.csv"
     include_alias_previous_symbols: false
     directory_output: "results"
   
   Activity:
-    activity_file: "data/activity_input/rnaseq_tpm_20220624.csv"
-    cell_line_file: "data/activity_input/cell_line_list.csv"
-    tf_activity_file: "data/activity_input/ccle_tf_activities.csv"
-    mutations_file: "data/activity_input/CCLE_muts_binary.csv"
-    cnv_file: "data/activity_input/CCLE_CNV_binary.csv"
+    activity_file: "activity_input/rnaseq_tpm_20220624.csv"  # or activity_input/rnaseq_tpm_coding_genes26Q1.csv
+    cell_line_file: "vis_2024/cell_line_list.csv"
+    format_override: null  # optional: old | 26Q1 | null (auto-detect)
+    tf_activity_file: "activity_input/ccle_tf_activities.csv"
+    mutations_file: "activity_input/CCLE_muts_binary.csv"
+    cnv_file: "activity_input/CCLE_CNV_binary.csv"
     directory_output: "results"
     data_sources: ["mutations", "cnv", "TF"]
 ```
 
-**Note:** For tissue-organized output, `cell_line_list.csv` must contain `tissue`, `SIDM`, and `cell_line_name` columns. For legacy mode, no specific columns are required.
+**Note:** CELIOS auto-detects expression format from `activity_file`. Use `format_override` only if you need to force parsing mode. For tissue-organized output, `cell_line_list.csv` must contain `tissue`, `SIDM`, and `cell_line_name` columns.
 
 ### **Step 3: Run**
 ```bash
@@ -110,13 +111,16 @@ print(activity_matrix.head())
 
 ```bash
 # Run all tests
-pytest tests/ -v
+python -m pytest -q
 
 # Run specific test file
-pytest tests/test_run_celios.py -v
+python -m pytest src/tests/test_run_celios.py -v
+
+# Run parser-format tests
+python -m pytest src/celios/tests/test_activity_parser.py -v
 
 # Run with coverage (if pytest-cov installed)
-pytest tests/ --cov=celios
+python -m pytest --cov=src/celios
 ```
 
 ---
@@ -130,9 +134,9 @@ pytest tests/ --cov=celios
 | `paths.output` | str | ✓ | — | Output directory |
 | `paths.cellfiles_dir` | str | ✗ | — | Directory for per-cell-line training files (legacy mode) |
 | `paths.tissue_dir` | str | ✗ | — | Root directory for tissue-organized cell line folders |
-| `paths.tissue_dir` | str | ✗ | — | Root directory for tissue-organized cell line folders |
 | `steps.Node` | dict | ✗ | — | Network analysis step config (skip if using pre-built node_dic) |
 | `steps.Activity` | dict | ✓ | — | Activity extraction step config |
+| `steps.Activity.format_override` | str/null | ✗ | null | Force expression parser format: `old` or `26Q1` |
 | `steps.Activity.data_sources` | list | ✗ | ["mutations","cnv","TF","expression"] | Priority order for activity data |
 
 ---
@@ -144,6 +148,7 @@ pytest tests/ --cov=celios
 | `celios: command not found` | Reinstall: `pip install -e .` |
 | `ModuleNotFoundError: No module named 'celios'` | Run from repo root: `python -m celios.cli run --config config.yaml` |
 | `FileNotFoundError: config.yaml` | Use absolute path or verify file exists: `ls config.yaml` |
+| `FileNotFoundError: cell_line_list.csv` | Use `vis_2024/cell_line_list.csv` (or your own file) in `steps.Activity.cell_line_file` |
 | `YAML config not recognized` | Install PyYAML: `pip install pyyaml` (JSON configs work by default) |
 
 See [INSTALL.md](INSTALL.md) for more troubleshooting.

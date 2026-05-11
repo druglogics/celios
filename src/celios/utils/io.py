@@ -37,6 +37,8 @@ def save_file(data, directory_path, file_name, file_type='csv', **kwargs):
 		raise ValueError('Unsupported file type. Use "csv", "json", or "txt".')
 
 
+
+
 def load_csv_file(file_path, verbose=False, **kwargs):
 	data = pd.read_csv(file_path, **kwargs)
 
@@ -92,8 +94,9 @@ def load_sidm_from_model_csv(cell_line_names, verbose=False):
 		verbose (bool): If True, log detailed matching results.
 	
 	Returns:
-		dict: Mapping of SIDM -> cell_line_name for matched cell lines.
-		      Also returns dict with 'matched' and 'not_found' keys if verbose.
+		tuple: (sidm_dict, not_found)
+		       sidm_dict: {SIDM -> cell_line_name} for matched cell lines
+		       not_found: list of cell_line names that couldn't be matched
 	
 	Raises:
 		FileNotFoundError: If Model.csv is not found in the package.
@@ -157,6 +160,80 @@ def load_sidm_from_model_csv(cell_line_names, verbose=False):
 	if not_found and verbose:
 		report_mod.add_log(
 			f"Warning: {len(not_found)} cell line(s) not found in Model.csv and will be excluded: {', '.join(not_found)}"
+		)
+	
+	return sidm_dict, not_found
+
+
+def load_sidm_from_modelid(model_ids, verbose=False):
+	"""Load SIDM (SangerModelID) mapping from ModelID values using the bundled Model.csv file.
+	
+	This function maps DepMap ModelID values (ACH-*) to SangerModelID (SIDM) values
+	by looking them up in the Model.csv registry. Used for 26Q1 format activity files.
+	
+	Args:
+		model_ids (list): List of ModelID values (e.g., ['ACH-000001', 'ACH-000002', ...])
+		verbose (bool): If True, log detailed matching results.
+	
+	Returns:
+		tuple: (sidm_dict, not_found)
+		       sidm_dict: {SIDM -> model_id} for matched entries
+		       not_found: list of model_ids that couldn't be matched
+	
+	Raises:
+		FileNotFoundError: If Model.csv is not found in the package.
+		ValueError: If no model IDs from the input list match any in Model.csv.
+	"""
+	from pathlib import Path
+	
+	# Locate Model.csv in the package
+	package_dir = Path(__file__).parent.parent / 'features'
+	model_csv_path = package_dir / 'Model.csv'
+	
+	if not model_csv_path.exists():
+		raise FileNotFoundError(
+			f"Model.csv not found at {model_csv_path}. "
+			"Please reinstall celios to ensure the package includes the Model.csv registry."
+		)
+	
+	# Load Model.csv
+	model_df = pd.read_csv(model_csv_path)
+	
+	# Build lookup: ModelID -> SIDM
+	model_id_lookup = {}
+	for _, row in model_df.iterrows():
+		model_id = str(row['ModelID']) if pd.notna(row['ModelID']) else None
+		sidm = str(row['SangerModelID']) if pd.notna(row['SangerModelID']) else None
+		
+		if model_id and sidm:
+			model_id_lookup[model_id] = sidm
+	
+	# Match input model IDs
+	sidm_dict = {}  # Maps SIDM -> model_id
+	not_found = []
+	
+	for mid in model_ids:
+		mid = str(mid).strip()
+		if mid in model_id_lookup:
+			sidm = model_id_lookup[mid]
+			sidm_dict[sidm] = mid
+			if verbose:
+				report_mod.add_log(f"Matched ModelID '{mid}' -> SIDM {sidm}")
+		else:
+			not_found.append(mid)
+			if verbose:
+				report_mod.add_log(f"No match found for ModelID '{mid}' in Model.csv")
+	
+	if not sidm_dict:
+		raise ValueError(
+			f"No ModelID values from the provided list could be found in Model.csv. "
+			f"Not found: {', '.join(not_found)}. "
+			f"Please check your ModelID values."
+		)
+	
+	if not_found and verbose:
+		report_mod.add_log(
+			f"Warning: {len(not_found)} ModelID(s) not found in Model.csv and will be excluded: {', '.join(not_found)}"
 		)
 	
 	return sidm_dict, not_found

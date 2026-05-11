@@ -1,0 +1,2 @@
+prune src/celios.egg-info
+prune src/tests

@@ -90,7 +90,10 @@ Test that CELIOS installed correctly:
 celios --help
 
 # Run the test suite (requires pytest)
-pytest src/tests/ -v
+python -m pytest -q
+
+# Optional: run parser-format tests only
+python -m pytest src/celios/tests/test_activity_parser.py -v
 ```
 
 ### 2. Prepare Your Workspace
@@ -112,6 +115,24 @@ my_celios_project/
 
 Create a YAML or JSON config file to specify your inputs and outputs. See [QUICKSTART.md](QUICKSTART.md) for a configuration template.
 
+### 3.1 Activity File Format Support
+
+CELIOS supports multiple RNA-seq activity formats through a parser strategy in `src/celios/features/activity_parser.py`.
+
+Supported files:
+- `activity_input/rnaseq_tpm_20220624.csv` (legacy format)
+- `activity_input/rnaseq_tpm_coding_genes26Q1.csv` (26Q1 format)
+
+By default, CELIOS auto-detects the format. You can optionally force parser selection with:
+
+```yaml
+steps:
+	Activity:
+		activity_file: "activity_input/rnaseq_tpm_coding_genes26Q1.csv"
+		cell_line_file: "vis_2024/cell_line_list.csv"
+		format_override: "26Q1"  # optional: old | 26Q1 | null
+```
+
 ### 4. Run Your First Analysis
 
 ```bash
@@ -126,6 +147,7 @@ celios run --config configs/celios_config.yaml --verbose
 | `celios: command not found` | Console script not in PATH | Reinstall with `pip install -e .` and ensure virtual environment is activated |
 | `ImportError: No module named 'pandas'` | Missing pandas dependency | Run `pip install pandas` or reinstall CELIOS with `pip install celios` |
 | `No such file or directory: config.yaml` | Configuration file path is incorrect | Verify config path is correct (absolute or relative to current directory) |
+| `No such file or directory: ...cell_line_list.csv` | `cell_line_file` points to a missing file | Use an existing file such as `vis_2024/cell_line_list.csv` or provide your own |
 | `Tests fail after installation` | Testing dependencies missing | Install with `pip install -e ".[dev]"` to include pytest and other dev tools |
 | `YAML config not recognized` | PyYAML not installed | Install with `pip install pyyaml` for YAML support (optional; JSON configs work by default) |
 | `Permission denied` on Linux/macOS | Virtual environment permissions issue | Ensure you've activated the virtual environment before installing |
@@ -168,6 +190,6 @@ CELIOS is intended to be published from GitHub Actions using [trusted publishing
 If you encounter issues not covered in this guide:
 
 1. Check the [Troubleshooting](#troubleshooting) section above
-2. Review the example configurations in `tests/test_run_celios.py`
+2. Review the example configurations in `src/tests/test_run_celios.py`
 3. Check existing GitHub issues or open a new one with error details
 4. Contact the development team at viviamsb@ntnu.no

@@ -16,28 +16,32 @@ CELIOS/
 ├── 📄 setup.py                     # Package configuration & dependencies
 ├── 📄 requirements.txt             # Python dependencies list
 │
-├── 📁 celios/                      # Main package directory
-│   ├── __init__.py                 # Package initialization
-│   ├── base_defaults.py            # Default configuration constants
-│   ├── cli.py                      # Command-line interface entry point
-│   ├── core.py                     # Core pipeline orchestration logic
+├── 📁 src/                         # Source root (src-layout)
+│   ├── 📁 celios/                  # Main package directory
+│   │   ├── __init__.py             # Package initialization
+│   │   ├── base_defaults.py        # Default configuration constants
+│   │   ├── cli.py                  # Command-line interface entry point
+│   │   ├── core.py                 # Core pipeline orchestration logic
 │   │
-│   ├── 📁 features/                # Feature modules for pipeline steps
-│   │   ├── __init__.py
-│   │   ├── activity.py             # Activity extraction step
-│   │   ├── files.py                # File I/O operations
-│   │   ├── node.py                 # Node dictionary generation step
-│   │   ├── sifbase.py              # SIF network parsing utilities
-│   │   ├── tissue.py               # Tissue-aware file organization
-│   │   └── training.py             # Training file generation (DrugLogics format)
+│   │   ├── 📁 features/            # Feature modules for pipeline steps
+│   │   │   ├── __init__.py
+│   │   │   ├── activity_parser.py  # Format detection + parser strategy for activity files
+│   │   │   ├── files.py            # File I/O operations
+│   │   │   ├── node.py             # Node dictionary generation step
+│   │   │   ├── sifbase.py          # SIF network parsing utilities
+│   │   │   ├── tissue.py           # Tissue-aware file organization
+│   │   │   └── training.py         # Activity extraction + training file generation
 │   │
-│   ├── 📁 utils/                   # Utility modules
-│   │   ├── __init__.py
-│   │   ├── io.py                   # Input/output helper functions
-│   │   ├── report.py               # Report generation and logging
-│   │   └── validate.py             # Configuration & data validation
+│   │   ├── 📁 utils/               # Utility modules
+│   │   │   ├── __init__.py
+│   │   │   ├── io.py               # Input/output helper functions
+│   │   │   ├── report.py           # Report generation and logging
+│   │   │   └── validate.py         # Configuration & data validation
 │   │
-│   └── 📁 __pycache__/             # Python cache (auto-generated)
+│   │   └── 📁 tests/               # Package-level tests
+│   │       └── test_activity_parser.py
+│   └── 📁 tests/                   # Repository-level integration tests
+│       └── test_run_celios.py
 │
 ├── 📁 data/                        # Sample and reference data
 │   ├── 📁 activity_input/          # Example activity matrices
@@ -135,18 +139,36 @@ CELIOS/
 
 ---
 
-### **celios/features/activity.py** (~400 lines)
-**Purpose:** Activity matrix extraction from multi-omics data
+### **src/celios/features/activity_parser.py** (~300 lines)
+**Purpose:** Format-agnostic expression file parsing
+
+**Key Functions/Classes:**
+- `FormatDetector.detect(filepath, format_override=None)` - Detects supported format or uses explicit override
+- `OldFormatParser` - Handles legacy `rnaseq_tpm_20220624.csv` layout
+- `Format26Q1Parser` - Handles `rnaseq_tpm_coding_genes26Q1.csv` layout
+- `get_parser(format_name)` - Parser factory
+
+**Key Features:**
+- Strategy pattern for pluggable file parsers
+- Auto-detection of supported activity formats
+- Optional explicit format selection via config (`steps.Activity.format_override`)
+- Metadata extraction for reporting
+
+---
+
+### **src/celios/features/training.py** (~150 lines)
+**Purpose:** Activity matrix extraction and DrugLogics-compatible training file generation
 
 **Key Functions:**
-- `build_activity_matrix(cell_line_file, activity_file, tf_file, mutations_file, cnv_file, data_sources)` - Main orchestrator
-- `load_activity_data(activity_file, cell_lines)` - Load and filter gene expression data
+- `extract_omics(...)` - Main activity extraction entry point
+- `ActivityMatrix._load_activity_raw()` - Loads expression using parser strategy
 - `load_omics_data(mutations_file, cnv_file, tf_file, cell_lines)` - Load binary/continuous omics matrices
 - `merge_data_sources(data_dict, priority)` - Merge multi-source data with priority ordering
 - `generate_training_files(activity_matrix, cell_lines, output_dir)` - Create per-cell-line DrugLogics files
 
 **Key Features:**
 - Supports multiple data sources: mutations (binary), CNV (binary), TF activity (continuous), gene expression (continuous)
+- Supports multiple expression file formats via parser strategy module
 - Priority-based data selection (mutations → CNV → TF → expression by default)
 - Handles multi-index cell lines (SIDM + cell_line_name)
 - Outputs: `activity_master_matrix.csv` (all sources), `activity_from_master.csv` (priority-selected)
@@ -264,14 +286,16 @@ CELIOS/
 
 | Task | File(s) |
 |------|---------|
-| **Run the pipeline** | `celios/cli.py`, `celios/core.py` |
-| **Modify CLI commands** | `celios/cli.py` |
-| **Change Node step logic** | `celios/features/node.py`, `celios/features/sifbase.py` |
-| **Change Activity step logic** | `celios/features/activity.py` |
-| **Modify output format** | `celios/features/files.py`, `celios/utils/io.py` |
-| **Update configuration validation** | `celios/utils/validate.py` |
-| **Change default parameters** | `celios/base_defaults.py` |
-| **Add new tests** | `tests/test_run_celios.py` |
+| **Run the pipeline** | `src/celios/cli.py`, `src/celios/core.py` |
+| **Modify CLI commands** | `src/celios/cli.py` |
+| **Change Node step logic** | `src/celios/features/node.py`, `src/celios/features/sifbase.py` |
+| **Change Activity format parsing** | `src/celios/features/activity_parser.py` |
+| **Change Activity step logic** | `src/celios/features/training.py` |
+| **Modify output format** | `src/celios/features/files.py`, `src/celios/utils/io.py` |
+| **Update configuration validation** | `src/celios/utils/validate.py` |
+| **Change default parameters** | `src/celios/base_defaults.py` |
+| **Add parser tests** | `src/celios/tests/test_activity_parser.py` |
+| **Add integration tests** | `src/tests/test_run_celios.py` |
 | **Improve documentation** | `README.md`, `INSTALL.md`, `QUICKSTART.md` |
 
 ---
@@ -320,7 +344,7 @@ CELIOS/
 └─────────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ STEP 2: ACTIVITY EXTRACTION (celios/features/activity.py)      │
+│ STEP 2: ACTIVITY EXTRACTION (src/celios/features/training.py)  │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  1. Load cell lines from metadata (SIDM, cell_line_name)       │

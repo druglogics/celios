@@ -14,6 +14,7 @@ Requirements:
 import traceback
 import os
 import sys
+import pytest
 
 # Make repository root importable when running the script directly
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -87,19 +88,20 @@ config_tissue = {
 }
 
 
-def test_celios_config(config, mode_name):
-    """Test CELIOS with a given configuration."""
+def run_celios_config(config, mode_name):
+    """Run CELIOS with a given configuration (script utility, not a pytest fixture).
+
+    Returns True on success, False on failure. This function is callable from
+    both the script entrypoint and pytest wrapper tests below.
+    """
     print(f"\n{'='*50}")
     print(f"Testing {mode_name} mode")
     print(f"{'='*50}")
-    
+
     try:
-        # Run the full pipeline (plan=False). This will perform Node and
-        # Activity steps and write outputs to the configured `paths.output`.
         artifacts = run_celios(config=config, plan=False, verbose=True)
         print(f'Success: {mode_name} mode returned artifacts of type', type(artifacts))
         try:
-            # pretty-print keys and small summaries
             if isinstance(artifacts, dict):
                 for k, v in artifacts.items():
                     if k == 'activity_matrix' and v is not None:
@@ -109,10 +111,28 @@ def test_celios_config(config, mode_name):
         except Exception:
             pass
         return True
-    except Exception as e:
+    except Exception:
         print(f'Error running {mode_name} mode:')
         traceback.print_exc()
         return False
+
+
+def test_run_celios_legacy():
+    """Pytest wrapper: run CELIOS in legacy mode using `config_legacy`."""
+    # Ensure required legacy cell line file exists
+    legacy_cell_file = os.path.join(ROOT, "data", "activity_input", "cell_line_list.csv")
+    if not os.path.exists(legacy_cell_file):
+        pytest.skip(f"Legacy cell line file not found: {legacy_cell_file}")
+
+    assert run_celios_config(config_legacy, "Legacy") is True
+
+
+def test_run_celios_tissue_aware():
+    """Pytest wrapper: run CELIOS in tissue-aware mode if tissue file exists."""
+    tissue_cell_file = os.path.join(ROOT, "data", "vis_2024", "all_cell_lines.csv")
+    if not os.path.exists(tissue_cell_file):
+        pytest.skip(f"Tissue cell line file not found: {tissue_cell_file}")
+    assert run_celios_config(config_tissue, "Tissue-aware") is True
 
 
 if __name__ == '__main__':
