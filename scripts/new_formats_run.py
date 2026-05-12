@@ -28,8 +28,8 @@ def main():
                 "directory_output": "results",
             },
             "Activity": {
-                "cell_line_file": "vis_2024/cell_line_list.csv",
-                "mutations_file": "activity_input/CCLE_muts_binary.csv",
+                "cell_line_file": "oncologics/cell_line_list.csv",
+                "mutations_file": "activity_input/26Q1_mutations.csv",
                 "cnv_file": "activity_input/CCLE_CNV_binary.csv",
                 "directory_output": "results",
                 "data_sources": ["mutations", "cnv"],
