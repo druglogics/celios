@@ -74,18 +74,54 @@ artifacts = run_celios(config=config, plan=False, verbose=True)
 
 ### Activity Input Format Support
 
-CELIOS now supports multiple expression input formats through a strategy-based parser module (`src/celios/features/activity_parser.py`).
+CELIOS supports multiple input formats through strategy-based parser modules:
+- **Activity expressions** (`src/celios/features/activity_parser.py`)
+- **Binary matrices** (mutations/CNV) (`src/celios/features/binary_parser.py`)
+
+#### Activity File Formats
 
 Supported activity files:
 - `rnaseq_tpm_20220624.csv` (legacy multi-header format)
-- `rnaseq_tpm_coding_genes26Q1.csv` (26Q1 single-header format)
+- `rnaseq_tpm_coding_genes26Q1.csv` (26Q1 single-header format with ModelID)
+
+#### Binary Matrix Formats
+
+Supported mutations and CNV files:
+- **OLD format**: genes × SIDM (example: `CCLE_muts_binary.csv`)
+  - Index: gene symbols
+  - Columns: SIDM identifiers
+  - Values: 0/1 (binary)
+
+- **26Q1 format**: ModelID × genes
+  - Index: DepMap ModelID (ACH-*)
+  - Columns: gene names
+  - Values: 0/1 (binary)
+  - Automatically maps ModelID → SIDM using Model.csv registry
+
+#### Format Detection & Override
 
 Behavior:
-- Default is automatic format detection.
-- You can override detection with `steps.Activity.format_override` set to `"old"` or `"26Q1"`.
-- Parsed metadata is included in run reporting.
+- Default is automatic format detection by inspecting file headers.
+- You can override detection with `steps.Activity`:
+  - `format_override`: For activity file ("old" | "26q1")
+  - `mutations_format_override`: For mutations file ("old" | "26q1")
+  - `cnv_format_override`: For CNV file ("old" | "26q1")
 
-See `src/tests/test_run_celios.py` and `src/celios/tests/test_activity_parser.py` for examples.
+Example:
+```yaml
+steps:
+  Activity:
+    activity_file: "activity_input/rnaseq_tpm_coding_genes26Q1.csv"
+    format_override: "26q1"
+    mutations_file: "omics/new_mutations_modelid.csv"
+    mutations_format_override: "26q1"
+    cnv_file: "omics/cnv_binary.csv"
+    cnv_format_override: "old"
+```
+
+Parsed metadata is included in run reporting (see `run_log.txt`).
+
+See `src/tests/test_run_celios.py`, `src/celios/tests/test_activity_parser.py`, and `src/celios/tests/test_binary_parser.py` for examples.
 
 ### Tissue-Organized Output (Optional)
 

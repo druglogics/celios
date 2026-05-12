@@ -49,10 +49,13 @@ CONFIG_TEMPLATE = {
         "Activity": {
             "activity_file": None,
             "cell_line_file": None,
+            "format_override": None,
             "node_dict": None,
             "tf_activity_file": None,
             "mutations_file": None,
+            "mutations_format_override": None,
             "cnv_file": None,
+            "cnv_format_override": None,
             "directory_output": None,
             "verbose": False,
             "data_sources": ["mutations", "cnv", "TF", "expression"],

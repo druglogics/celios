@@ -26,6 +26,10 @@ import re
 
 from celios.utils import activitymatrix_report, save_file, load_csv_file
 from celios.features.activity_parser import FormatDetector, get_parser
+from celios.features.binary_parser import (
+    FormatDetector as BinaryFormatDetector,
+    get_binary_parser,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +58,8 @@ class ActivityMatrix:
         verbose: bool = False,
         data_sources: List[str] = None,
         format_override: Optional[str] = None,
+        mutations_format_override: Optional[str] = None,
+        cnv_format_override: Optional[str] = None,
     ):
         self.activity_file = activity_file
         self.cell_line_file = cell_line_file
@@ -67,6 +73,8 @@ class ActivityMatrix:
         self.directory_output = directory_output
         self.verbose = verbose
         self.format_override = format_override
+        self.mutations_format_override = mutations_format_override
+        self.cnv_format_override = cnv_format_override
 
         self.activity_raw_df: Optional[pd.DataFrame] = None
         self.activity_df: Optional[pd.DataFrame] = None  # gene-level with single header
@@ -261,7 +269,16 @@ class ActivityMatrix:
         depending on format) to a normalized form with SIDM columns.
 
         Sets `self.activity_df`.
+        
+        Raises:
+            ValueError: If activity file is not available (required for expression processing).
         """
+        if not self.activity_file:
+            raise ValueError(
+                "activity_file is required when 'expression' is in data_sources. "
+                "Provide activity_file or remove 'expression' from data_sources."
+            )
+        
         if self.activity_raw_df is None:
             self._load_activity_raw()
 
@@ -365,21 +382,56 @@ class ActivityMatrix:
     # ------------------------------------------------------------------
     # Mutations / CNV processing
     # ------------------------------------------------------------------
-    def _load_binary_table(self, filepath: str, index_col='gene_symbol') -> pd.DataFrame:
-        """Load a binary matrix of genes x SIDM (0/1) and set index to gene symbol.
-        Uses `load_csv_file` helper which preserves CSV parsing behaviour in repo.
+    def _load_binary_table(
+        self,
+        filepath: str,
+        format_override: Optional[str] = None,
+        index_col: str = "gene_symbol",
+    ) -> pd.DataFrame:
+        """Load a binary matrix (mutations, CNV) with format auto-detection.
+
+        Supports two formats:
+        - OLD: genes × SIDM
+        - 26Q1: ModelID × genes (transposed + mapped to SIDM)
+
+        Args:
+            filepath: Path to binary matrix file
+            format_override: Force format ("old" | "26q1" | None for auto-detect)
+            index_col: Column name for index (typically 'gene_symbol')
+
+        Returns:
+            DataFrame with genes as index, SIDM columns, binary values
         """
         if not filepath:
             return None
-        df = load_csv_file(filepath, index_col=0)
-        # allow both a column named 'gene_symbol' or existing index
-        if 'gene_symbol' in df.columns:
-            df = df.set_index('gene_symbol')
-        # keep only SIDM columns
+
+        # Auto-detect format
+        try:
+            detected_format = BinaryFormatDetector.detect(filepath, format_override)
+        except ValueError as e:
+            # Fall back to old behavior if detection fails
+            self._log(f"Binary format detection failed: {e}. Using old format.", level="info")
+            df = load_csv_file(filepath, index_col=0)
+            if "gene_symbol" in df.columns:
+                df = df.set_index("gene_symbol")
+            if self.sidm_list is None:
+                self._ensure_sidm()
+            cols = [c for c in df.columns if c in self.sidm_list]
+            df = df.loc[:, cols]
+            return df
+
+        # Use binary parser factory
+        parser = get_binary_parser(detected_format, verbose=self.verbose)
+        df, metadata = parser.load(filepath)
+
+        # Filter to SIDM list
         if self.sidm_list is None:
             self._ensure_sidm()
         cols = [c for c in df.columns if c in self.sidm_list]
         df = df.loc[:, cols]
+
+        self._log(f"Loaded {detected_format} binary matrix: {metadata['shape']} genes×samples")
+
         return df
 
     def _node_binary_matrix(self, bin_df: pd.DataFrame) -> pd.DataFrame:
@@ -470,8 +522,10 @@ class ActivityMatrix:
         if self.verbose:
             self._log("Building master activity matrix with sources: %s", self.data_sources)
 
-        # ensure sidm and activity prepared
-        self._prepare_activity_df()
+        # ensure sidm and only prepare activity if expression is needed
+        if 'expression' in self.data_sources:
+            self._prepare_activity_df()
+        
         self._reverse_node_dict()
 
         # node-level symbol list column
@@ -511,7 +565,9 @@ class ActivityMatrix:
         # build mutations/node binary
         if 'mutations' in self.data_sources:
             if self.mutations_file:
-                muts = self._load_binary_table(self.mutations_file)
+                muts = self._load_binary_table(
+                    self.mutations_file, format_override=self.mutations_format_override
+                )
                 node_muts = self._node_binary_matrix(muts)
                 mutations_data = {}
                 for sidm in self.sidm_list:
@@ -526,7 +582,9 @@ class ActivityMatrix:
         # build CNV node binary
         if 'cnv' in self.data_sources:
             if self.cnv_file:
-                cnv = self._load_binary_table(self.cnv_file)
+                cnv = self._load_binary_table(
+                    self.cnv_file, format_override=self.cnv_format_override
+                )
                 node_cnv = self._node_binary_matrix(cnv)
                 cnv_data = {}
                 for sidm in self.sidm_list:
@@ -664,29 +722,33 @@ class ActivityMatrix:
 
         raw = prep = norm = node_expr = muts = cnv = tfm = None
 
-        # load/prepare activity
-        try:
-            raw = self._load_activity_raw()
-            prep = self._prepare_activity_df()
-            norm = self._normalize_expression()
-            if 'expression' in (selected_sources or self.data_sources):
+        # load/prepare activity only if expression is needed
+        if 'expression' in (selected_sources or self.data_sources):
+            try:
+                raw = self._load_activity_raw()
+                prep = self._prepare_activity_df()
+                norm = self._normalize_expression()
                 self._reverse_node_dict()
                 node_expr = self._node_expression_matrix()
-        except Exception as e:
-            if self.verbose:
-                logger.exception('Error preparing expression data: %s', e)
+            except Exception as e:
+                if self.verbose:
+                    logger.exception('Error preparing expression data: %s', e)
 
         # load binary tables and TF matrix if requested
         try:
             if 'mutations' in (selected_sources or self.data_sources) and self.mutations_file:
-                muts = self._load_binary_table(self.mutations_file)
+                muts = self._load_binary_table(
+                    self.mutations_file, format_override=self.mutations_format_override
+                )
         except Exception as e:
             if self.verbose:
                 logger.exception('Error loading mutations: %s', e)
 
         try:
             if 'cnv' in (selected_sources or self.data_sources) and self.cnv_file:
-                cnv = self._load_binary_table(self.cnv_file)
+                cnv = self._load_binary_table(
+                    self.cnv_file, format_override=self.cnv_format_override
+                )
         except Exception as e:
             if self.verbose:
                 logger.exception('Error loading CNV: %s', e)
@@ -763,6 +825,8 @@ def extract_omics(
     save_master: bool = True,
     make_report: bool = True,
     format_override: Optional[str] = None,
+    mutations_format_override: Optional[str] = None,
+    cnv_format_override: Optional[str] = None,
 ):
     """Public convenience function that runs the ActivityMatrix pipeline.
 
@@ -771,7 +835,9 @@ def extract_omics(
     selected activity DataFrame.
 
     Args:
-        format_override: Optional format hint ('old' or '26Q1'). If None, auto-detects format.
+        format_override: Optional format hint for activity ('old' or '26Q1'). If None, auto-detects.
+        mutations_format_override: Optional format hint for mutations ('old' or '26q1'). If None, auto-detects.
+        cnv_format_override: Optional format hint for CNV ('old' or '26q1'). If None, auto-detects.
     """
     am = ActivityMatrix(
         activity_file=activity_file,
@@ -784,6 +850,8 @@ def extract_omics(
         verbose=verbose,
         data_sources=data_sources,
         format_override=format_override,
+        mutations_format_override=mutations_format_override,
+        cnv_format_override=cnv_format_override,
     )
 
     # If node_dict was provided as a path, attempt to load it via helper

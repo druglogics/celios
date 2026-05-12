@@ -92,6 +92,9 @@ def get_omics(
     directory_output: Optional[str] = None,
     data_sources: Optional[list] = None,
     verbose: bool = True,
+    format_override: Optional[str] = None,
+    mutations_format_override: Optional[str] = None,
+    cnv_format_override: Optional[str] = None,
 ):
     """Convenience wrapper that calls `training.extract_omics`.
 
@@ -101,6 +104,11 @@ def get_omics(
 
     Saving outputs and creating reports is triggered only when
     `directory_output` is provided (either explicitly or via config).
+    
+    Args:
+        format_override: Optional format hint for activity ('old' or '26Q1').
+        mutations_format_override: Optional format hint for mutations ('old' or '26q1').
+        cnv_format_override: Optional format hint for CNV ('old' or '26q1').
     """
     # If a config is provided, derive defaults from it
     if config is not None:
@@ -121,6 +129,9 @@ def get_omics(
         cnv_file = cnv_file or act_cfg.get("cnv_file")
         node_dict = node_dict or act_cfg.get("node_dict")
         directory_output = directory_output or act_cfg.get("directory_output") or cfg["paths"].get("output")
+        format_override = format_override or act_cfg.get("format_override")
+        mutations_format_override = mutations_format_override or act_cfg.get("mutations_format_override")
+        cnv_format_override = cnv_format_override or act_cfg.get("cnv_format_override")
         # If files are given as relative paths, assume they live under input_path
         def _resolve(p):
             if p is None:
@@ -155,6 +166,9 @@ def get_omics(
         data_sources=data_sources,
         save_master=do_save,
         make_report=do_save,
+        format_override=format_override,
+        mutations_format_override=mutations_format_override,
+        cnv_format_override=cnv_format_override,
     )
 
 

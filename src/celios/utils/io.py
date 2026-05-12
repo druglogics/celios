@@ -165,7 +165,7 @@ def load_sidm_from_model_csv(cell_line_names, verbose=False):
 	return sidm_dict, not_found
 
 
-def load_sidm_from_modelid(model_ids, verbose=False):
+def load_sidm_from_modelid(model_ids, model_registry=None, verbose=False):
 	"""Load SIDM (SangerModelID) mapping from ModelID values using the bundled Model.csv file.
 	
 	This function maps DepMap ModelID values (ACH-*) to SangerModelID (SIDM) values
@@ -173,6 +173,7 @@ def load_sidm_from_modelid(model_ids, verbose=False):
 	
 	Args:
 		model_ids (list): List of ModelID values (e.g., ['ACH-000001', 'ACH-000002', ...])
+		model_registry (str): Optional path to custom Model.csv. Defaults to bundled version.
 		verbose (bool): If True, log detailed matching results.
 	
 	Returns:
@@ -186,9 +187,13 @@ def load_sidm_from_modelid(model_ids, verbose=False):
 	"""
 	from pathlib import Path
 	
-	# Locate Model.csv in the package
-	package_dir = Path(__file__).parent.parent / 'features'
-	model_csv_path = package_dir / 'Model.csv'
+	# Locate Model.csv
+	if model_registry is None:
+		# Use bundled Model.csv
+		package_dir = Path(__file__).parent.parent / 'features'
+		model_csv_path = package_dir / 'Model.csv'
+	else:
+		model_csv_path = Path(model_registry)
 	
 	if not model_csv_path.exists():
 		raise FileNotFoundError(
