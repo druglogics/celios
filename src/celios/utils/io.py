@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from . import report as report_mod
+from .cell_line_resolver import resolve_identifiers_to_sidm, resolve_model_ids_to_sidm
 
 
 def save_file(data, directory_path, file_name, file_type='csv', **kwargs):
@@ -87,72 +88,32 @@ def load_node_dict_from_csv(file_path, verbose=False):
 
 
 def load_sidm_from_model_csv(cell_line_names, verbose=False):
-	"""Load SIDM (SangerModelID) mapping from the bundled Model.csv file.
+	"""Load SIDM mapping for user-provided identifiers.
 	
-	This function provides an authoritative, stable mapping from cell-line names to
-	SangerModelID values. It does not depend on activity file format, making it
-	immune to changes in upstream data sources.
+	This compatibility helper keeps the historical function name but now resolves
+	identifiers through the online resolver (Sanger API primary, Cellosaurus
+	fallback) instead of direct local Model.csv lookups.
 	
 	Args:
-		cell_line_names (list): List of cell-line names from user's cell_line_file.
+		cell_line_names (list): List of identifiers from user's cell_line_file.
 		verbose (bool): If True, log detailed matching results.
 	
 	Returns:
 		tuple: (sidm_dict, not_found)
-		       sidm_dict: {SIDM -> cell_line_name} for matched cell lines
-		       not_found: list of cell_line names that couldn't be matched
+		       sidm_dict: {SIDM -> cell_line_name} for matched entries
+		       not_found: list of identifiers that couldn't be matched
 	
 	Raises:
-		FileNotFoundError: If Model.csv is not found in the package.
-		ValueError: If no cell lines from the input list match any in Model.csv.
+		ValueError: If no identifiers from the input list can be resolved.
 	"""
-	import re
+	sidm_dict, not_found, results = resolve_identifiers_to_sidm(cell_line_names)
 
-	# Locate Model.csv from the installed package resources.
-	# This works for both editable installs and built wheels.
-	try:
-		model_csv_resource = resources.files("celios.features").joinpath("Model.csv")
-		with resources.as_file(model_csv_resource) as model_csv_path:
-			if not Path(model_csv_path).exists():
-				raise FileNotFoundError
-			model_df = pd.read_csv(model_csv_path)
-	except FileNotFoundError as exc:
-		raise FileNotFoundError(
-			"Model.csv not found in the installed celios package resources. "
-			"Please reinstall celios or provide a cell_line_file with a 'SIDM' column."
-		) from exc
-	
-	# Normalization function: uppercase and remove non-alphanumeric
-	def _normalize_name(name):
-		return re.sub(r'[^A-Za-z0-9]', '', str(name).upper()).strip()
-	
-	# Build a lookup map: normalized_name -> (original_name_from_model, sidm)
-	model_lookup = {}
-	for _, row in model_df.iterrows():
-		cell_line = str(row['CellLineName']) if pd.notna(row['CellLineName']) else None
-		sidm = str(row['SangerModelID']) if pd.notna(row['SangerModelID']) else None
-		
-		if cell_line and sidm:
-			normalized = _normalize_name(cell_line)
-			# Store both the original name and SIDM for reference
-			model_lookup[normalized] = {'original_name': cell_line, 'sidm': sidm}
-	
-	# Match input cell-line names against the model lookup
-	sidm_dict = {}  # Maps SIDM -> cell_line_name
-	not_found = []
-	
-	for cname in cell_line_names:
-		normalized = _normalize_name(cname)
-		if normalized in model_lookup:
-			entry = model_lookup[normalized]
-			sidm = entry['sidm']
-			sidm_dict[sidm] = cname  # Use the original input name
-			if verbose:
-				report_mod.add_log(f"Matched '{cname}' -> SIDM {sidm}")
-		else:
-			not_found.append(cname)
-			if verbose:
-				report_mod.add_log(f"No match found for '{cname}' in Model.csv")
+	if verbose:
+		for result in results:
+			if result.status == "resolved":
+				report_mod.add_log(f"Matched '{result.input_raw}' -> SIDM {result.sidm} ({result.matched_on})")
+			else:
+				report_mod.add_log(f"No match found for '{result.input_raw}' in Model.csv")
 	
 	if not sidm_dict:
 		raise ValueError(
@@ -171,14 +132,14 @@ def load_sidm_from_model_csv(cell_line_names, verbose=False):
 
 
 def load_sidm_from_modelid(model_ids, model_registry=None, verbose=False):
-	"""Load SIDM (SangerModelID) mapping from ModelID values using Model.csv.
+	"""Load SIDM mapping from ModelID values.
 
-	This function maps DepMap ModelID values (ACH-*) to SangerModelID (SIDM) values
-	by looking them up in the Model.csv registry. Used for 26Q1 format activity files.
+	Maps DepMap ModelID values (ACH-*) to SIDM through the online resolver
+	(Sanger API primary, Cellosaurus fallback).
 
 	Args:
 		model_ids (list): List of ModelID values (e.g., ['ACH-000001', 'ACH-000002', ...])
-		model_registry (str): Optional path to custom Model.csv. Defaults to bundled version.
+		model_registry (str): Kept for backward compatibility; currently unused.
 		verbose (bool): If True, log detailed matching results.
 
 	Returns:
@@ -187,62 +148,17 @@ def load_sidm_from_modelid(model_ids, model_registry=None, verbose=False):
 		       not_found: unique model_ids that couldn't be matched
 
 	Raises:
-		FileNotFoundError: If Model.csv is not found in the package.
-		ValueError: If no model IDs from the input list match any in Model.csv.
+		ValueError: If no model IDs from the input list can be resolved.
 	"""
-	# Locate Model.csv
-	if model_registry is None:
-		try:
-			model_csv_resource = resources.files("celios.features").joinpath("Model.csv")
-			with resources.as_file(model_csv_resource) as model_csv_path:
-				if not Path(model_csv_path).exists():
-					raise FileNotFoundError
-				model_df = pd.read_csv(model_csv_path)
-		except FileNotFoundError as exc:
-			raise FileNotFoundError(
-				"Model.csv not found in the installed celios package resources. "
-				"Please reinstall celios or pass a custom model_registry path."
-			) from exc
-	else:
-		model_csv_path = Path(model_registry)
-		if not model_csv_path.exists():
-			raise FileNotFoundError(
-				f"Model.csv not found at {model_csv_path}. "
-				"Please provide a valid custom model_registry path."
-			)
-		model_df = pd.read_csv(model_csv_path)
-	
-	# Build lookup: ModelID -> SIDM
-	if 'ModelID' not in model_df.columns or 'SangerModelID' not in model_df.columns:
-		raise ValueError(
-			"Model.csv must contain 'ModelID' and 'SangerModelID' columns for ModelID mapping."
-		)
+	model_to_sidm, not_found = resolve_model_ids_to_sidm(model_ids, model_registry=model_registry)
 
-	model_id_lookup = {}
-	for _, row in model_df[['ModelID', 'SangerModelID']].dropna().iterrows():
-		model_id = str(row['ModelID']).strip()
-		sidm = str(row['SangerModelID']).strip()
-		if model_id and sidm:
-			model_id_lookup[model_id] = sidm
-	
-	# Match input model IDs
-	model_to_sidm = {}
-	not_found = []
-	seen_missing = set()
-	
-	for mid in model_ids:
-		mid = str(mid).strip()
-		if mid in model_id_lookup:
-			sidm = model_id_lookup[mid]
-			model_to_sidm[mid] = sidm
-			if verbose:
-				report_mod.add_log(f"Matched ModelID '{mid}' -> SIDM {sidm}")
-		else:
-			if mid not in seen_missing:
-				not_found.append(mid)
-				seen_missing.add(mid)
-			if verbose:
-				report_mod.add_log(f"No match found for ModelID '{mid}' in Model.csv")
+	if verbose:
+		for mid in model_ids:
+			normalized = str(mid).strip()
+			if normalized in model_to_sidm:
+				report_mod.add_log(f"Matched ModelID '{normalized}' -> SIDM {model_to_sidm[normalized]}")
+			else:
+				report_mod.add_log(f"No match found for ModelID '{normalized}' in Model.csv")
 	
 	if not model_to_sidm:
 		raise ValueError(

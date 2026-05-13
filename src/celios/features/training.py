@@ -24,7 +24,8 @@ import sys
 import time
 import re
 
-from celios.utils import activitymatrix_report, save_file, load_csv_file
+from celios.utils import activitymatrix_report, save_file, load_csv_file, add_resolution_report
+from celios.utils.cell_line_resolver import resolve_sidm_from_dataframe
 from celios.features.activity_parser import FormatDetector, get_parser
 from celios.features.binary_parser import (
     FormatDetector as BinaryFormatDetector,
@@ -196,11 +197,10 @@ class ActivityMatrix:
     def _ensure_sidm(self):
         """Ensure `self.sidm_list` and `self.sidm_dict` are populated from `cell_line_file`.
         
-        Resolution order (Priority 1 to 2):
-          1. Explicit SIDM column: If cell_line_file contains both 'SIDM' and 'cell_line_name' columns,
-             use those directly (backward compatible with existing user configs).
-          2. Model.csv lookup: If no explicit SIDM column, use the bundled Model.csv registry to match
-             cell-line names. This approach is immune to changes in activity file format.
+          Resolution strategy:
+             1. Read user table (csv/tsv auto-detected)
+             2. Resolve identifiers row-wise to SIDM via local Model.csv resolver
+                 supporting SIDM, ModelID(ACH), RRID/CVCL, CCLE_ID, and names.
         
         Returns:
             tuple: (sidm_list, sidm_dict) where sidm_dict maps SIDM -> cell_line_name
@@ -213,51 +213,45 @@ class ActivityMatrix:
         if not self.cell_line_file:
             raise ValueError("cell_line_file must be provided to extract SIDM list")
         self._log("Loading cell line file: %s", self.cell_line_file)
-        df = load_csv_file(self.cell_line_file)
 
-        # Case 1: explicit SIDM mapping present (backward compatible)
-        if "SIDM" in df.columns and "cell_line_name" in df.columns:
-            self.sidm_list = df["SIDM"].tolist()
-            self.sidm_dict = dict(zip(df["SIDM"], df["cell_line_name"]))
-            self._log("Found %s SIDM entries from explicit cell_line_file columns", len(self.sidm_list))
-            return self.sidm_list, self.sidm_dict
+        # Auto-detect delimiter to support both .csv and .tsv cell-line files.
+        try:
+            df = load_csv_file(self.cell_line_file, sep=None, engine="python")
+        except Exception:
+            df = load_csv_file(self.cell_line_file)
 
-        # Case 2: only cell_line_name present -> use Model.csv lookup (new, stable approach)
-        if "cell_line_name" in df.columns:
-            names = df["cell_line_name"].astype(str).tolist()
-            
-            try:
-                from celios.utils.io import load_sidm_from_model_csv
-                sidm_dict, not_found = load_sidm_from_model_csv(names, verbose=self.verbose)
-            except Exception as e:
-                raise ValueError(
-                    f"Failed to load SIDM mapping from Model.csv: {e}. "
-                    "Please provide a 'SIDM' column in your cell_line_file as a fallback."
-                ) from e
-            
-            # Handle unmatched cell lines
-            if not_found:
-                # Report the problematic cell lines but continue processing
-                warning_msg = (
-                    "WARNING: Could not find SIDM mapping for %d cell line(s): %s\n"
-                    "These cell lines will be excluded from the analysis.\n"
-                    "To include them, ensure the cell line names match entries in the CELIOS Model.csv registry,\n"
-                    "or provide a 'SIDM' column explicitly in your cell_line_file."
-                    % (len(not_found), ", ".join(not_found))
-                )
-                print("=" * 80)
-                print(warning_msg)
-                print("=" * 80)
-                if self.verbose:
-                    logger.warning(warning_msg)
-            
-            sidm_list = list(sidm_dict.keys())
-            self.sidm_list = sidm_list
-            self.sidm_dict = sidm_dict
-            self._log("Resolved %s SIDM entries from Model.csv (excluded %s)", len(self.sidm_list), len(not_found))
-            return self.sidm_list, self.sidm_dict
+        try:
+            sidm_dict, not_found, resolution_report = resolve_sidm_from_dataframe(df)
+            # Log the resolution report to run logs
+            add_resolution_report(resolution_report)
+        except Exception as e:
+            raise ValueError(
+                f"Failed to resolve SIDM mapping from cell_line_file: {e}. "
+                "Provide at least one supported identifier column (SIDM, ModelID, RRID/CVCL, CCLE_ID, or cell_line_name)."
+            ) from e
 
-        raise ValueError("cell_line_file must contain 'cell_line_name' column (or 'SIDM' + 'cell_line_name' columns)")
+        if not sidm_dict:
+            raise ValueError(
+                "No cell lines from cell_line_file could be resolved to SIDM. "
+                "Check identifier values or include SIDM column explicitly."
+            )
+
+        if not_found:
+            warning_msg = (
+                "WARNING: Could not resolve %d cell line identifier(s): %s\n"
+                "These rows will be excluded from the analysis."
+                % (len(not_found), ", ".join(not_found))
+            )
+            print("=" * 80)
+            print(warning_msg)
+            print("=" * 80)
+            if self.verbose:
+                logger.warning(warning_msg)
+
+        self.sidm_list = list(sidm_dict.keys())
+        self.sidm_dict = sidm_dict
+        self._log("Resolved %s SIDM entries (excluded %s)", len(self.sidm_list), len(not_found))
+        return self.sidm_list, self.sidm_dict
 
     # ------------------------------------------------------------------
     # Expression processing

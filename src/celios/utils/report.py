@@ -34,6 +34,28 @@ def add_log(msg: str) -> None:
             pass
 
 
+def add_resolution_report(report: dict) -> None:
+    """Append a formatted cell line resolution report to the run log.
+    
+    Args:
+        report: dict with keys like 'total_rows', 'resolved', 'ambiguous', 'unresolved'
+    """
+    try:
+        add_log("-------------------------------------------------------------------")
+        add_log("CELL LINE IDENTIFIER RESOLUTION REPORT")
+        add_log("-------------------------------------------------------------------")
+        add_log(f"Total rows processed: {report.get('total_rows', 0)}")
+        add_log(f"Successfully resolved: {report.get('resolved', 0)}")
+        add_log(f"Ambiguous (multiple matches): {report.get('ambiguous', 0)}")
+        add_log(f"Unresolved: {report.get('unresolved', 0)}")
+        
+        cache_stats = report.get('cache_stats', {})
+        if cache_stats.get('cache_enabled'):
+            add_log(f"Cache: {cache_stats.get('cached_identifiers', 0)} cached identifiers")
+    except Exception:
+        logger.debug('Failed to add resolution report to log')
+
+
 def get_run_logs() -> list:
     return list(_RUN_MESSAGES)
 

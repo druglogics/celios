@@ -453,9 +453,10 @@ def run_celios(
     else:
         raise ValueError("No node dictionary source found. Either define 'steps.Node' in config or provide 'node_dic' in 'steps.Activity'")
 
-    # 2) Extract omics / activity matrix
+    # 2) Find and resolve cell line identifiers
     if verbose:
         print("\n\nSTEP 2: Extracting omics - activity matrix")
+
     activity_df = get_omics(config=config, node_dict=node_dict, verbose=verbose)
     artifacts["activity_matrix"] = activity_df
 

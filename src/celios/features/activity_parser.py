@@ -252,48 +252,11 @@ class Format26Q1Parser(ActivityParser):
         # For now, use ModelID as column names; will be mapped during ActivityMatrix._ensure_sidm()
         # Or: we can import and use load_sidm_from_model_csv here
 
-        # Map ModelID to SIDM (import here to avoid circular dependency)
-        try:
-            from celios.utils.io import load_sidm_from_model_csv
-
-            sidm_dict, not_found = load_sidm_from_model_csv(model_ids, verbose=self.verbose)
-            metadata["sidm_mapping"] = sidm_dict
-            metadata["unmapped_model_ids"] = not_found
-
-            if not_found:
-                self._log(
-                    f"Warning: {len(not_found)} ModelID(s) not found in Model.csv: {not_found}",
-                    level="warning",
-                )
-
-            # Rename columns from ModelID to SIDM (inverse of sidm_dict which maps SIDM -> cell_line)
-            # sidm_dict: {SIDM -> cell_line_name}
-            # We need: {model_id -> SIDM}
-            # The issue is model_ids from df["ModelID"] correspond to ModelID values
-            # But sidm_dict maps from SIDM ID not from cell_line names
-            # Actually, load_sidm_from_model_csv takes cell_line names and returns {SIDM -> cell_line_name}
-            # So here we pass ModelID values expecting them to match...
-            # Let me re-read the function
-
-            # Actually, looking at load_sidm_from_model_csv in io.py, it takes cell_line_names
-            # and looks them up in Model.csv using normalization. The ModelID is a column in Model.csv
-            # So we need a different approach: map ModelID values directly to SIDM
-
-            # For now, just use ModelID as surrogate for sample identifiers
-            # The mapping to SIDM will happen in ActivityMatrix._ensure_sidm()
-            # when it processes the cell_line_file
-
-            # Store model_id to SIDM mapping if available
-            if sidm_dict:
-                # Create reverse mapping: model_id -> SIDM
-                # sidm_dict maps SIDM -> cell_line_name from Model.csv
-                # But we need model_id -> SIDM
-                # This requires looking at the actual Model.csv structure
-                pass
-
-        except Exception as e:
-            self._log(f"Could not map ModelID to SIDM: {e}. Using ModelID as sample identifiers.", level="warning")
-            # Fallback: keep ModelID as column names for now
+        # SIDM mapping is intentionally deferred to the training layer where
+        # cell_line_file identifiers are resolved in one place. Doing API lookups
+        # here would add large parsing overhead for big expression matrices.
+        metadata["sidm_mapping"] = {}
+        metadata["unmapped_model_ids"] = []
 
         # Transpose: rows become genes, columns become samples
         df_genes = df_genes.T
