@@ -1,2 +1,3 @@
 prune src/celios.egg-info
 prune src/tests
+include src/celios/features/Model.csv

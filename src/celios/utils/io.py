@@ -1,6 +1,10 @@
-import pandas as pd
 import json
 import os
+from importlib import resources
+from pathlib import Path
+
+import pandas as pd
+
 from . import report as report_mod
 
 
@@ -103,20 +107,20 @@ def load_sidm_from_model_csv(cell_line_names, verbose=False):
 		ValueError: If no cell lines from the input list match any in Model.csv.
 	"""
 	import re
-	from pathlib import Path
-	
-	# Locate Model.csv in the package
-	package_dir = Path(__file__).parent.parent / 'features'
-	model_csv_path = package_dir / 'Model.csv'
-	
-	if not model_csv_path.exists():
+
+	# Locate Model.csv from the installed package resources.
+	# This works for both editable installs and built wheels.
+	try:
+		model_csv_resource = resources.files("celios.features").joinpath("Model.csv")
+		with resources.as_file(model_csv_resource) as model_csv_path:
+			if not Path(model_csv_path).exists():
+				raise FileNotFoundError
+			model_df = pd.read_csv(model_csv_path)
+	except FileNotFoundError as exc:
 		raise FileNotFoundError(
-			f"Model.csv not found at {model_csv_path}. "
-			"Please reinstall celios to ensure the package includes the Model.csv registry."
-		)
-	
-	# Load Model.csv
-	model_df = pd.read_csv(model_csv_path)
+			"Model.csv not found in the installed celios package resources. "
+			"Please reinstall celios or provide a cell_line_file with a 'SIDM' column."
+		) from exc
 	
 	# Normalization function: uppercase and remove non-alphanumeric
 	def _normalize_name(name):
@@ -185,24 +189,27 @@ def load_sidm_from_modelid(model_ids, model_registry=None, verbose=False):
 		FileNotFoundError: If Model.csv is not found in the package.
 		ValueError: If no model IDs from the input list match any in Model.csv.
 	"""
-	from pathlib import Path
-	
 	# Locate Model.csv
 	if model_registry is None:
-		# Use bundled Model.csv
-		package_dir = Path(__file__).parent.parent / 'features'
-		model_csv_path = package_dir / 'Model.csv'
+		try:
+			model_csv_resource = resources.files("celios.features").joinpath("Model.csv")
+			with resources.as_file(model_csv_resource) as model_csv_path:
+				if not Path(model_csv_path).exists():
+					raise FileNotFoundError
+				model_df = pd.read_csv(model_csv_path)
+		except FileNotFoundError as exc:
+			raise FileNotFoundError(
+				"Model.csv not found in the installed celios package resources. "
+				"Please reinstall celios or pass a custom model_registry path."
+			) from exc
 	else:
 		model_csv_path = Path(model_registry)
-	
-	if not model_csv_path.exists():
-		raise FileNotFoundError(
-			f"Model.csv not found at {model_csv_path}. "
-			"Please reinstall celios to ensure the package includes the Model.csv registry."
-		)
-	
-	# Load Model.csv
-	model_df = pd.read_csv(model_csv_path)
+		if not model_csv_path.exists():
+			raise FileNotFoundError(
+				f"Model.csv not found at {model_csv_path}. "
+				"Please provide a valid custom model_registry path."
+			)
+		model_df = pd.read_csv(model_csv_path)
 	
 	# Build lookup: ModelID -> SIDM
 	model_id_lookup = {}
