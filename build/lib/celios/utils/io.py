@@ -169,23 +169,22 @@ def load_sidm_from_model_csv(cell_line_names, verbose=False):
 	return sidm_dict, not_found
 
 
-
 def load_sidm_from_modelid(model_ids, model_registry=None, verbose=False):
-	"""Load SIDM (SangerModelID) mapping from ModelID values using Model.csv.
-
+	"""Load SIDM (SangerModelID) mapping from ModelID values using the bundled Model.csv file.
+	
 	This function maps DepMap ModelID values (ACH-*) to SangerModelID (SIDM) values
 	by looking them up in the Model.csv registry. Used for 26Q1 format activity files.
-
+	
 	Args:
 		model_ids (list): List of ModelID values (e.g., ['ACH-000001', 'ACH-000002', ...])
 		model_registry (str): Optional path to custom Model.csv. Defaults to bundled version.
 		verbose (bool): If True, log detailed matching results.
-
+	
 	Returns:
-		tuple: (model_to_sidm, not_found)
-		       model_to_sidm: {ModelID -> SIDM} for matched entries
-		       not_found: unique model_ids that couldn't be matched
-
+		tuple: (sidm_dict, not_found)
+		       sidm_dict: {SIDM -> model_id} for matched entries
+		       not_found: list of model_ids that couldn't be matched
+	
 	Raises:
 		FileNotFoundError: If Model.csv is not found in the package.
 		ValueError: If no model IDs from the input list match any in Model.csv.
@@ -213,38 +212,31 @@ def load_sidm_from_modelid(model_ids, model_registry=None, verbose=False):
 		model_df = pd.read_csv(model_csv_path)
 	
 	# Build lookup: ModelID -> SIDM
-	if 'ModelID' not in model_df.columns or 'SangerModelID' not in model_df.columns:
-		raise ValueError(
-			"Model.csv must contain 'ModelID' and 'SangerModelID' columns for ModelID mapping."
-		)
-
 	model_id_lookup = {}
-	for _, row in model_df[['ModelID', 'SangerModelID']].dropna().iterrows():
-		model_id = str(row['ModelID']).strip()
-		sidm = str(row['SangerModelID']).strip()
+	for _, row in model_df.iterrows():
+		model_id = str(row['ModelID']) if pd.notna(row['ModelID']) else None
+		sidm = str(row['SangerModelID']) if pd.notna(row['SangerModelID']) else None
+		
 		if model_id and sidm:
 			model_id_lookup[model_id] = sidm
 	
 	# Match input model IDs
-	model_to_sidm = {}
+	sidm_dict = {}  # Maps SIDM -> model_id
 	not_found = []
-	seen_missing = set()
 	
 	for mid in model_ids:
 		mid = str(mid).strip()
 		if mid in model_id_lookup:
 			sidm = model_id_lookup[mid]
-			model_to_sidm[mid] = sidm
+			sidm_dict[sidm] = mid
 			if verbose:
 				report_mod.add_log(f"Matched ModelID '{mid}' -> SIDM {sidm}")
 		else:
-			if mid not in seen_missing:
-				not_found.append(mid)
-				seen_missing.add(mid)
+			not_found.append(mid)
 			if verbose:
 				report_mod.add_log(f"No match found for ModelID '{mid}' in Model.csv")
 	
-	if not model_to_sidm:
+	if not sidm_dict:
 		raise ValueError(
 			f"No ModelID values from the provided list could be found in Model.csv. "
 			f"Not found: {', '.join(not_found)}. "
@@ -256,4 +248,4 @@ def load_sidm_from_modelid(model_ids, model_registry=None, verbose=False):
 			f"Warning: {len(not_found)} ModelID(s) not found in Model.csv and will be excluded: {', '.join(not_found)}"
 		)
 	
-	return model_to_sidm, not_found
+	return sidm_dict, not_found

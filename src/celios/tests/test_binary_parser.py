@@ -144,6 +144,33 @@ class TestModelIDBinaryMatrixParser:
         parser = ModelIDBinaryMatrixParser(verbose=False)
         assert isinstance(parser, ModelIDBinaryMatrixParser)
 
+    def test_parse_modelid_format_with_partial_registry(self, tmp_path):
+        """Parse 26Q1 format and keep only ModelIDs that exist in the registry."""
+        activity_file = tmp_path / "binary_26q1.csv"
+        activity_file.write_text(
+            'ModelID,gene_a,gene_b\n'
+            'ACH-000001,1,0\n'
+            'ACH-999999,0,1\n',
+            encoding="utf-8",
+        )
+
+        model_registry = tmp_path / "Model.csv"
+        model_registry.write_text(
+            'ModelID,SangerModelID\n'
+            'ACH-000001,SIDM00001\n',
+            encoding="utf-8",
+        )
+
+        parser = ModelIDBinaryMatrixParser(verbose=False)
+        df, metadata = parser.load(str(activity_file), model_registry=str(model_registry))
+
+        assert df.index.name == "gene_symbol"
+        assert list(df.columns) == ["SIDM00001"]
+        assert df.loc["GENE_A", "SIDM00001"] == 1
+        assert df.loc["GENE_B", "SIDM00001"] == 0
+        assert metadata["model_ids_mapped"] == 1
+        assert metadata["model_ids_not_found"] == 1
+
 
 # ============================================================================
 # Test get_binary_parser Factory

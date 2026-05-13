@@ -182,16 +182,15 @@ class ModelIDBinaryMatrixParser(BinaryMatrixParser):
             logger.info(f"Loaded {len(model_ids)} ModelIDs from file")
 
         # Map ModelID → SIDM
-        model_to_sidm, not_found = load_sidm_from_modelid(
+        sidm_mapping, not_found = load_sidm_from_modelid(
             model_ids, model_registry=model_registry, verbose=self.verbose
         )
 
         if not_found:
             logger.warning(f"ModelIDs not found in registry: {not_found}")
 
-        # Map index from ModelID to SIDM and drop any rows that could not be resolved.
-        df.index = df.index.map(model_to_sidm)
-        df = df[df.index.notna()]
+        # Map index from ModelID to SIDM
+        df.index = df.index.map(sidm_mapping)
         df.index.name = "SIDM"
 
         # Normalize gene symbols to uppercase (column names are genes)
@@ -224,14 +223,14 @@ class ModelIDBinaryMatrixParser(BinaryMatrixParser):
             "shape": (n_genes, n_samples),
             "n_genes": n_genes,
             "n_samples": n_samples,
-            "model_ids_mapped": len(model_to_sidm),
+            "model_ids_mapped": len(sidm_mapping),
             "model_ids_not_found": len(not_found),
         }
 
         if self.verbose:
             logger.info(
                 f"26Q1 binary matrix: {n_genes} genes × {n_samples} SIDM samples "
-                f"(mapped {len(model_to_sidm)} ModelIDs)"
+                f"(mapped {len(sidm_mapping)} ModelIDs)"
             )
 
         return df, metadata
