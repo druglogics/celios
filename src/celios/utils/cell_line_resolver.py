@@ -536,7 +536,7 @@ def resolve_model_ids_to_sidm(
 
 
 def resolve_sidm_from_dataframe(
-    df: pd.DataFrame, model_registry: Optional[str] = None
+    df: pd.DataFrame, model_registry: Optional[str] = None, verbose: bool = False
 ) -> Tuple[Dict[str, str], List[str], Dict[str, int]]:
     """Resolve SIDMs row-wise from a user-provided cell-line table.
 
@@ -585,7 +585,6 @@ def resolve_sidm_from_dataframe(
     resolver = CellLineResolver(use_cellosaurus_fallback=True)
     sidm_dict: Dict[str, str] = {}
     not_found: List[str] = []
-    
     # Track resolution statistics
     resolution_counts = {
         'total_rows': len(df),
@@ -594,7 +593,11 @@ def resolve_sidm_from_dataframe(
         'unresolved': 0,
     }
 
-    for _, row in df.iterrows():
+    # Keep detailed per-row results and alias map for resolved rows
+    resolution_results = []
+    alias_to_sidm: Dict[str, str] = {}
+
+    for row_idx, row in df.iterrows():
         row_identifier = None
         for col in available_id_cols:
             value = row[col]
@@ -604,6 +607,8 @@ def resolve_sidm_from_dataframe(
 
         if row_identifier is None:
             resolution_counts['unresolved'] += 1
+            if verbose:
+                print(f"[SIDM][row={row_idx}] unresolved: empty identifier row")
             continue
 
         display_name = row_identifier
@@ -621,19 +626,53 @@ def resolve_sidm_from_dataframe(
             if display_name != row_identifier:
                 result = resolver.resolve_one(display_name)
 
+        # record detailed result
+        resolution_results.append(result)
+
         if result.status == "resolved" and result.sidm is not None:
-            sidm_dict[result.sidm] = display_name
+            sidm = result.sidm
+            sidm_dict[sidm] = display_name
             resolution_counts['resolved'] += 1
+            if verbose:
+                print(
+                    f"[SIDM][row={row_idx}] resolved '{row_identifier}' -> {sidm} "
+                    f"(source={result.source}, matched_on={result.matched_on})"
+                )
+            # add canonicalized aliases for this resolved row
+            if result.input_normalized:
+                alias_to_sidm[result.input_normalized] = sidm
+            # also map the raw input and the chosen display name
+            alias_to_sidm[result.input_raw] = sidm
+            if display_name and display_name != result.input_raw:
+                alias_to_sidm[display_name] = sidm
         elif result.status == "ambiguous":
             resolution_counts['ambiguous'] += 1
             not_found.append(row_identifier)
+            if verbose:
+                print(
+                    f"[SIDM][row={row_idx}] ambiguous '{row_identifier}' "
+                    f"candidates={result.candidate_sidms}"
+                )
         else:
             resolution_counts['unresolved'] += 1
             not_found.append(row_identifier)
+            if verbose:
+                print(f"[SIDM][row={row_idx}] unresolved '{row_identifier}'")
 
     # Add cache statistics
     resolution_counts['cache_stats'] = resolver.get_cache_stats()
-    
+    # expose alias mapping and detailed results to callers (training will use alias map)
+    resolution_counts['alias_to_sidm'] = alias_to_sidm
+    resolution_counts['detailed_results'] = resolution_results
+
+    if verbose:
+        print("[SIDM] Resolution summary:")
+        print(f"  total_rows: {resolution_counts['total_rows']}")
+        print(f"  resolved: {resolution_counts['resolved']}")
+        print(f"  ambiguous: {resolution_counts['ambiguous']}")
+        print(f"  unresolved: {resolution_counts['unresolved']}")
+        print(f"  alias_count: {len(alias_to_sidm)}")
+
     return sidm_dict, not_found, resolution_counts
 
 

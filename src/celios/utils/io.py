@@ -6,7 +6,11 @@ from pathlib import Path
 import pandas as pd
 
 from . import report as report_mod
-from .cell_line_resolver import resolve_identifiers_to_sidm, resolve_model_ids_to_sidm
+from .cell_line_resolver import (
+	resolve_identifiers_to_sidm,
+	resolve_model_ids_to_sidm,
+	resolve_sidm_from_dataframe,
+)
 
 
 def save_file(data, directory_path, file_name, file_type='csv', **kwargs):
@@ -173,3 +177,90 @@ def load_sidm_from_modelid(model_ids, model_registry=None, verbose=False):
 		)
 	
 	return model_to_sidm, not_found
+
+
+def build_alias_map_from_cellfile(cell_line_file, verbose=False):
+	"""Resolve a user-provided cell_line_file and build alias -> SIDM mapping.
+
+	Returns:
+		tuple: (alias_to_sidm, sidm_dict, not_found, resolution_report)
+	"""
+	if not cell_line_file:
+		raise ValueError("cell_line_file must be provided")
+
+	df = pd.read_csv(cell_line_file)
+	sidm_dict, not_found, resolution_report = resolve_sidm_from_dataframe(df)
+
+	alias_map = {}
+	if isinstance(resolution_report, dict):
+		alias_map = resolution_report.get('alias_to_sidm', {}) or {}
+
+	if verbose:
+		report_mod.add_log(f"Built alias map for {len(sidm_dict)} SIDMs with {len(alias_map)} aliases")
+
+	return alias_map, sidm_dict, not_found, resolution_report
+
+
+def normalize_sample_ids_to_sidm(df, alias_map=None, sidm_list=None, collapse_method='max'):
+	"""Normalize DataFrame sample identifiers (columns) to SIDM using provided alias_map.
+
+	Args:
+		df: pandas DataFrame with sample identifiers as columns
+		alias_map: dict alias -> SIDM
+		sidm_list: optional list of SIDMs to restrict output columns
+		collapse_method: how to collapse multiple columns mapping to same SIDM ('max'|'mean'|'first')
+
+	Returns:
+		(df_normalized, unmapped_list)
+	"""
+	if df is None or df.empty:
+		return df, []
+
+	alias_map = alias_map or {}
+	mapped_cols = {}
+	unmapped = []
+
+	for col in list(df.columns):
+		key = str(col).strip()
+		# direct SIDM
+		if sidm_list and key in sidm_list:
+			mapped_cols.setdefault(key, []).append(col)
+			continue
+		if key in alias_map:
+			mapped_cols.setdefault(alias_map[key], []).append(col)
+			continue
+		# case-insensitive alias match
+		low = key.lower()
+		found = None
+		for a, s in alias_map.items():
+			if a.lower() == low:
+				found = s
+				break
+		if found:
+			mapped_cols.setdefault(found, []).append(col)
+			continue
+		unmapped.append(key)
+
+	if not mapped_cols:
+		return df, unmapped
+
+	new_cols = {}
+	for sidm, orig_cols in mapped_cols.items():
+		if len(orig_cols) == 1:
+			new_cols[sidm] = df[orig_cols[0]]
+		else:
+			if collapse_method == 'max':
+				new_cols[sidm] = df[orig_cols].max(axis=1, skipna=True)
+			elif collapse_method == 'mean':
+				new_cols[sidm] = df[orig_cols].mean(axis=1, skipna=True)
+			else:
+				new_cols[sidm] = df[orig_cols].iloc[:, 0]
+
+	new_df = pd.DataFrame(new_cols)
+
+	# If sidm_list provided, restrict to those SIDMs (preserve order if possible)
+	if sidm_list is not None:
+		cols = [s for s in sidm_list if s in new_df.columns]
+		new_df = new_df.loc[:, cols]
+
+	return new_df, unmapped

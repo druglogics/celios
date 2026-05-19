@@ -6,6 +6,7 @@ from .cell_line_resolver import (
 	resolve_identifiers_to_sidm,
 	resolve_sidm_from_dataframe,
 )
+from .id_normalization import normalize_df_sample_ids
 
 __all__ = [
 	"activitymatrix_report",
@@ -17,4 +18,5 @@ __all__ = [
 	"normalize_identifier",
 	"resolve_identifiers_to_sidm",
 	"resolve_sidm_from_dataframe",
+	"normalize_df_sample_ids",
 ]

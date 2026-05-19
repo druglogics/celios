@@ -11,7 +11,6 @@ from .base_defaults import CONFIG_TEMPLATE
 from .features import node as node_mod, training as training_mod, files as files_mod, tissue as tissue_mod
 import os
 import traceback
-import pandas as pd
 
 
 def _deep_merge(target: Dict[str, Any], src: Dict[str, Any]) -> None:
@@ -95,6 +94,7 @@ def get_omics(
     format_override: Optional[str] = None,
     mutations_format_override: Optional[str] = None,
     cnv_format_override: Optional[str] = None,
+    pre_resolved_cell_lines: Optional[Dict[str, Any]] = None,
 ):
     """Convenience wrapper that calls `training.extract_omics`.
 
@@ -154,6 +154,15 @@ def get_omics(
     # Determine whether to save outputs / make reports based on directory presence
     do_save = directory_output is not None
 
+    if verbose:
+        print("[Activity] Resolved input files:")
+        print(f"  activity_file: {activity_file}")
+        print(f"  cell_line_file: {cell_line_file}")
+        print(f"  tf_activity_file: {tf_activity_file}")
+        print(f"  mutations_file: {mutations_file}")
+        print(f"  cnv_file: {cnv_file}")
+        print(f"  output_dir: {directory_output}")
+
     return training_mod.extract_omics(
         activity_file=activity_file,
         cell_line_file=cell_line_file,
@@ -169,6 +178,7 @@ def get_omics(
         format_override=format_override,
         mutations_format_override=mutations_format_override,
         cnv_format_override=cnv_format_override,
+        pre_resolved_cell_lines=pre_resolved_cell_lines,
     )
 
 
@@ -454,10 +464,56 @@ def run_celios(
         raise ValueError("No node dictionary source found. Either define 'steps.Node' in config or provide 'node_dic' in 'steps.Activity'")
 
     # 2) Find and resolve cell line identifiers
-    if verbose:
-        print("\n\nSTEP 2: Extracting omics - activity matrix")
+    cell_line_cfg = cfg.get("steps", {}).get("Activity", {}).get("cell_line_file")
+    # Resolve configured path against pipeline paths (base/input) same as get_omics
+    base = Path(cfg.get("paths", {}).get("base", ".")).expanduser().resolve()
+    input_path = Path(cfg.get("paths", {}).get("input", base / "input")).expanduser()
+    resolved_cell_line_path = None
+    if isinstance(cell_line_cfg, (str,)) and cell_line_cfg:
+        p = Path(cell_line_cfg)
+        if p.is_absolute():
+            resolved_cell_line_path = str(p)
+        else:
+            resolved_cell_line_path = str((input_path / cell_line_cfg).resolve())
+    else:
+        resolved_cell_line_path = cell_line_cfg
 
-    activity_df = get_omics(config=config, node_dict=node_dict, verbose=verbose)
+    if verbose:
+        print("\n\nSTEP 2: Resolving cell line identifiers")
+        print(f"Configured cell_line_file: {cell_line_cfg}")
+        print(f"Resolved cell_line_file: {resolved_cell_line_path}")
+
+    resolved_cell_lines = None
+    try:
+        from .features.training import resolve_cell_lines
+        resolved_cell_lines = resolve_cell_lines(cell_line_file=resolved_cell_line_path, verbose=verbose)
+        if verbose:
+            print("[PIPELINE] Step 2 summary:")
+            print(f"  SIDMs resolved: {len(resolved_cell_lines.get('sidm_list') or [])}")
+            print(f"  Alias entries: {len(resolved_cell_lines.get('alias_to_sidm') or {})}")
+    except Exception as e:
+        if verbose:
+            print("[PIPELINE] STEP 2 failed while resolving cell line identifiers.")
+            print(f"[PIPELINE] Error: {e}")
+            traceback.print_exc()
+        raise
+
+    if verbose:
+        print("\n\nSTEP 3: Extracting omics - activity matrix")
+
+    try:
+        activity_df = get_omics(
+            config=config,
+            node_dict=node_dict,
+            verbose=verbose,
+            pre_resolved_cell_lines=resolved_cell_lines,
+        )
+    except Exception as e:
+        if verbose:
+            print("[PIPELINE] STEP 3 failed while extracting omics.")
+            print(f"[PIPELINE] Error: {e}")
+            traceback.print_exc()
+        raise
     artifacts["activity_matrix"] = activity_df
 
     # 3) Optionally write DL training files
