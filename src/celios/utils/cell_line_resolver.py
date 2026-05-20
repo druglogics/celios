@@ -17,7 +17,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -28,6 +28,47 @@ CVCL_PATTERN = re.compile(r"^CVCL\s*[-_]?\s*([A-Z0-9]+)$", re.IGNORECASE)
 SIDM_SCAN_PATTERN = re.compile(r"SIDM\d{5,}", re.IGNORECASE)
 ACH_SCAN_PATTERN = re.compile(r"ACH-\d{6}", re.IGNORECASE)
 CVCL_SCAN_PATTERN = re.compile(r"CVCL_[A-Z0-9]+", re.IGNORECASE)
+
+_RECORD_LIST_KEYS = (
+    "results",
+    "hits",
+    "items",
+    "records",
+    "data",
+    "models",
+    "cell_lines",
+    "cellLines",
+    "entries",
+)
+
+_SIDM_FIELD_KEYS = {"sidm", "sangermodelid", "sanger_model_id", "sangerid"}
+_IDENTIFIER_FIELD_KEYS = {"identifier", "identifiers"}
+_TRUSTED_SIDM_PATHS = {
+    ("sidm",),
+    ("sangermodelid",),
+    ("model", "sidm"),
+    ("model", "sangermodelid"),
+}
+_ACH_FIELD_KEYS = {"ach", "modelid", "model_id", "sangermodelid", "depmapid", "depmap_id", "id", "ac", "accession"}
+_RRID_FIELD_KEYS = {"rrid", "id", "ac", "accession"}
+_CVCL_FIELD_KEYS = {"cvcl", "rrid", "id", "ac", "accession"}
+_NAME_FIELD_KEYS = {
+    "name",
+    "names",
+    "synonym",
+    "synonyms",
+    "alias",
+    "aliases",
+    "cell_line_name",
+    "celllinename",
+    "display_name",
+    "displayname",
+    "label",
+    "title",
+    "symbol",
+    "primary_name",
+    "preferred_name",
+}
 
 
 def _collapse_whitespace(value: str) -> str:
@@ -64,15 +105,14 @@ def normalize_identifier(value: object) -> str:
         digits = ach_match.group(1).zfill(6)
         return f"ACH-{digits}"
 
-    # Accept RRID variants and normalize to RRID:CVCL_XXXX
-    # e.g. RRID CVCL_0023, RRID-CVCL0023, RRID:CVCL-0023
-    if "RRID" in upper or "CVCL" in upper:
-        cvcl = extract_cvcl(upper)
-        if cvcl:
-            if upper.startswith("RRID"):
-                return f"RRID:{cvcl}"
-            # Raw CVCL input goes through canonical CVCL form
+    cvcl = extract_cvcl(upper)
+    if cvcl:
+        if upper.startswith("RRID"):
+            return f"RRID:{cvcl}"
+        if upper.startswith("CVCL"):
             return cvcl
+        if "RRID" in upper:
+            return f"RRID:{cvcl}"
 
     # Default: uppercase + collapsed whitespace
     return upper
@@ -106,6 +146,11 @@ def detect_identifier_type(value: object) -> str:
         return "rrid"
     if normalized.startswith("CVCL_"):
         return "cvcl"
+    raw_text = unicodedata.normalize("NFKC", str(value)).strip().upper() if value is not None else ""
+    if raw_text.startswith("RRID") and extract_cvcl(raw_text):
+        return "rrid"
+    if raw_text.startswith("CVCL") and extract_cvcl(raw_text):
+        return "cvcl"
     return "name"
 
 
@@ -115,6 +160,316 @@ def normalize_name_key(value: object) -> str:
         return ""
     text = unicodedata.normalize("NFKC", str(value)).upper().strip()
     return re.sub(r"[^A-Z0-9]", "", text)
+
+
+def _normalize_path_tokens(path: Tuple[str, ...]) -> List[str]:
+    tokens: List[str] = []
+    for part in path:
+        cleaned = re.sub(r"[^a-z0-9]+", "", str(part).lower())
+        if cleaned:
+            tokens.append(cleaned)
+    return tokens
+
+
+def _path_matches(path: Tuple[str, ...], allowed_keys: set) -> bool:
+    tokens = _normalize_path_tokens(path)
+    return any(
+        token in allowed_keys or any(token.startswith(allowed) for allowed in allowed_keys)
+        for token in tokens
+    )
+
+
+def _walk_record_fields(value: Any, path: Tuple[str, ...] = ()):
+    if isinstance(value, dict):
+        for key, sub_value in value.items():
+            yield from _walk_record_fields(sub_value, path + (str(key),))
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk_record_fields(item, path)
+    else:
+        yield path, "" if value is None else str(value)
+
+
+def _payload_to_records(payload: Any) -> List[Dict[str, Any]]:
+    if payload is None:
+        return []
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in _RECORD_LIST_KEYS:
+            value = payload.get(key)
+            if isinstance(value, list):
+                records = [item for item in value if isinstance(item, dict)]
+                if records:
+                    return records
+            if isinstance(value, dict):
+                nested_records = _payload_to_records(value)
+                if nested_records:
+                    return nested_records
+        return [payload]
+    return []
+
+
+def _jsonapi_payload_records(payload: Any) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    data_records: List[Dict[str, Any]] = []
+    included_records: List[Dict[str, Any]] = []
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, list):
+            data_records = [item for item in data if isinstance(item, dict)]
+        elif isinstance(data, dict):
+            data_records = [data]
+        included = payload.get("included")
+        if isinstance(included, list):
+            included_records = [item for item in included if isinstance(item, dict)]
+    return data_records, included_records
+
+
+def _record_relationship_identifier_ids(record: Dict[str, Any]) -> List[str]:
+    relationships = record.get("relationships")
+    if not isinstance(relationships, dict):
+        return []
+    identifiers = relationships.get("identifiers")
+    if not isinstance(identifiers, dict):
+        return []
+    data = identifiers.get("data")
+    if not isinstance(data, list):
+        return []
+    ids: List[str] = []
+    for item in data:
+        if isinstance(item, dict) and item.get("id") is not None:
+            item_id = str(item.get("id"))
+            if item_id not in ids:
+                ids.append(item_id)
+    return ids
+
+
+def _record_identifier_value(record: Dict[str, Any]) -> Optional[str]:
+    attributes = record.get("attributes")
+    if isinstance(attributes, dict):
+        for key in ("identifier", "accession", "value"):
+            value = attributes.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+    for key in ("identifier", "accession", "value"):
+        value = record.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _unique_values(values: List[str]) -> List[str]:
+    seen = set()
+    ordered: List[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            ordered.append(value)
+    return ordered
+
+
+def _dedupe_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    ordered: List[Dict[str, Any]] = []
+    for record in records:
+        key = json.dumps(record, sort_keys=True, default=str)
+        if key not in seen:
+            seen.add(key)
+            ordered.append(record)
+    return ordered
+
+
+def _resolve_records_from_payloads(payloads: List[Any], normalized: str, identifier_type: str):
+    raw_hit_count = 0
+    matched_records: List[Dict[str, Any]] = []
+    for payload in payloads:
+        records = _payload_to_records(payload)
+        raw_hit_count += len(records)
+        for record in records:
+            if _record_matches_identifier(record, normalized, identifier_type):
+                matched_records.append(record)
+    matched_records = _dedupe_records(matched_records)
+    sidm_candidates = _unique_values(
+        [sidm for record in matched_records for sidm in _extract_sidms_from_record(record)]
+    )
+    return raw_hit_count, matched_records, sidm_candidates
+
+
+def _record_matches_identifier(record: Dict[str, Any], normalized: str, identifier_type: str) -> bool:
+    if not record:
+        return False
+
+    name_key = normalize_name_key(normalized)
+    cvcl_token = extract_cvcl(normalized)
+
+    for path, value in _walk_record_fields(record):
+        if not value:
+            continue
+        if identifier_type == "sidm":
+            if _path_matches(path, _SIDM_FIELD_KEYS):
+                if normalize_identifier(value) == normalized:
+                    return True
+                sidm_match = SIDM_SCAN_PATTERN.search(value)
+                if sidm_match and normalize_identifier(sidm_match.group(0)) == normalized:
+                    return True
+        elif identifier_type == "model_id":
+            if _path_matches(path, _ACH_FIELD_KEYS) and normalize_identifier(value) == normalized:
+                return True
+        elif identifier_type in {"cvcl", "rrid"}:
+            if _path_matches(path, _CVCL_FIELD_KEYS | _RRID_FIELD_KEYS | _IDENTIFIER_FIELD_KEYS) or tuple(_normalize_path_tokens(path)) == ("xref",):
+                normalized_value = normalize_identifier(value)
+                if normalized_value == normalized:
+                    return True
+                if cvcl_token and extract_cvcl(value) == cvcl_token:
+                    return True
+        else:
+            if _path_matches(path, _NAME_FIELD_KEYS) and normalize_name_key(value) == name_key:
+                return True
+
+    return False
+
+
+def _extract_sidms_from_record(record: Dict[str, Any], allow_xref_sidm: bool = False) -> List[str]:
+    sidms: List[str] = []
+    record_id = record.get("id")
+    record_type = record.get("type")
+    if record_type == "model" and record_id is not None:
+        normalized_id = normalize_identifier(record_id)
+        if detect_identifier_type(normalized_id) == "sidm" and normalized_id not in sidms:
+            sidms.append(normalized_id)
+    for path, value in _walk_record_fields(record):
+        if not value:
+            continue
+        path_norm = tuple(_normalize_path_tokens(path))
+        if allow_xref_sidm and path_norm == ("xref",):
+            sidm_match = SIDM_SCAN_PATTERN.search(value)
+            if sidm_match:
+                normalized = normalize_identifier(sidm_match.group(0))
+                if detect_identifier_type(normalized) == "sidm" and normalized not in sidms:
+                    sidms.append(normalized)
+        elif path_norm in _TRUSTED_SIDM_PATHS:
+            normalized = normalize_identifier(value)
+            if detect_identifier_type(normalized) == "sidm" and normalized not in sidms:
+                sidms.append(normalized)
+    return sidms
+
+
+def _extract_trusted_sidm_sources(record: Dict[str, Any], allow_xref_sidm: bool = False) -> List[Dict[str, str]]:
+    sources: List[Dict[str, str]] = []
+    seen = set()
+    record_id = record.get("id")
+    record_type = record.get("type")
+    if record_type == "model" and record_id is not None:
+        normalized_id = normalize_identifier(record_id)
+        if detect_identifier_type(normalized_id) == "sidm":
+            key = (normalized_id, "id")
+            sources.append({"sidm": normalized_id, "source_field": "id", "raw_value": str(record_id)})
+            seen.add(key)
+    for path, value in _walk_record_fields(record):
+        if not value:
+            continue
+        path_norm = tuple(_normalize_path_tokens(path))
+        source_field = ".".join(path)
+        if allow_xref_sidm and path_norm == ("xref",):
+            sidm_match = SIDM_SCAN_PATTERN.search(value)
+            if not sidm_match:
+                continue
+            normalized = normalize_identifier(sidm_match.group(0))
+        elif path_norm in _TRUSTED_SIDM_PATHS:
+            normalized = normalize_identifier(value)
+            if detect_identifier_type(normalized) != "sidm":
+                continue
+        else:
+            continue
+        key = (normalized, source_field)
+        if key in seen:
+            continue
+        seen.add(key)
+        sources.append({"sidm": normalized, "source_field": source_field, "raw_value": str(value)})
+    return sources
+
+
+def _extract_trusted_ach_aliases(record: Dict[str, Any]) -> List[str]:
+    aliases: List[str] = []
+    record_id = record.get("id")
+    record_type = record.get("type")
+    if record_type == "model" and record_id is not None:
+        normalized_id = normalize_identifier(record_id)
+        if detect_identifier_type(normalized_id) == "model_id" and normalized_id not in aliases:
+            aliases.append(normalized_id)
+    for path, value in _walk_record_fields(record):
+        if not value or not _path_matches(path, _ACH_FIELD_KEYS):
+            continue
+        normalized = normalize_identifier(value)
+        if detect_identifier_type(normalized) == "model_id" and normalized not in aliases:
+            aliases.append(normalized)
+    return aliases
+
+
+def _extract_bridge_ids_from_record(record: Dict[str, Any]) -> List[str]:
+    bridge_ids: List[str] = []
+    for path, value in _walk_record_fields(record):
+        if not value:
+            continue
+        if _path_matches(path, _ACH_FIELD_KEYS):
+            normalized = normalize_identifier(value)
+            if normalized.startswith("ACH-") and normalized not in bridge_ids:
+                bridge_ids.append(normalized)
+        if _path_matches(path, _CVCL_FIELD_KEYS | _RRID_FIELD_KEYS) or tuple(_normalize_path_tokens(path)) == ("xref",):
+            cvcl = extract_cvcl(value)
+            if cvcl and cvcl not in bridge_ids:
+                bridge_ids.append(cvcl)
+            normalized = normalize_identifier(value)
+            if normalized.startswith("RRID:CVCL_") and normalized not in bridge_ids:
+                bridge_ids.append(normalized)
+        if tuple(_normalize_path_tokens(path)) == ("xref",):
+            for token in ACH_SCAN_PATTERN.findall(value):
+                normalized = normalize_identifier(token)
+                if normalized.startswith("ACH-") and normalized not in bridge_ids:
+                    bridge_ids.append(normalized)
+            for token in CVCL_SCAN_PATTERN.findall(value):
+                normalized = normalize_identifier(token)
+                if normalized.startswith("CVCL_") and normalized not in bridge_ids:
+                    bridge_ids.append(normalized)
+    return bridge_ids
+
+
+def _extract_name_keys_from_record(record: Dict[str, Any]) -> List[str]:
+    names: List[str] = []
+    for path, value in _walk_record_fields(record):
+        if not value or not _path_matches(path, _NAME_FIELD_KEYS):
+            continue
+        key = normalize_name_key(value)
+        if key and key not in names:
+            names.append(key)
+    return names
+
+
+def _extract_identifier_tokens_from_record(record: Dict[str, Any], identifier_type: str) -> List[str]:
+    tokens: List[str] = []
+    for path, value in _walk_record_fields(record):
+        if not value:
+            continue
+        path_norm = tuple(_normalize_path_tokens(path))
+        if identifier_type == "model_id" and _path_matches(path, _ACH_FIELD_KEYS):
+            normalized = normalize_identifier(value)
+            if normalized.startswith("ACH-") and normalized not in tokens:
+                tokens.append(normalized)
+        elif identifier_type in {"cvcl", "rrid"} and path_norm in {("cvcl",), ("rrid",), ("id",), ("ac",), ("accession",), ("model", "cvcl"), ("model", "rrid"), ("model", "id"), ("model", "ac"), ("model", "accession") }:
+            normalized = normalize_identifier(value)
+            cvcl = extract_cvcl(value)
+            for candidate in (normalized, cvcl):
+                if candidate and candidate not in tokens:
+                    tokens.append(candidate)
+        elif identifier_type == "name" and _path_matches(path, _NAME_FIELD_KEYS):
+            key = normalize_name_key(value)
+            if key and key not in tokens:
+                tokens.append(key)
+        elif identifier_type == "sidm" and path_norm in _TRUSTED_SIDM_PATHS:
+            normalized = normalize_identifier(value)
+            if normalized.startswith("SIDM") and normalized not in tokens:
+                tokens.append(normalized)
+    return tokens
 
 
 @dataclass
@@ -127,12 +482,25 @@ class CellLineResolutionResult:
     matched_on: Optional[str] = None
     candidate_sidms: Optional[List[str]] = None
     source: Optional[str] = None
+    raw_hit_count: int = 0
+    exact_matched_record_count: int = 0
+    matched_records: Optional[List[Dict[str, Any]]] = None
+    sidm_source_fields: Optional[List[Dict[str, str]]] = None
+    linked_identifier_records: Optional[List[Dict[str, Any]]] = None
 
 
 class JsonHttpClient:
     """Small JSON HTTP client for resolver API calls."""
 
+    def __init__(self):
+        self._cache: Dict[Tuple[str, Tuple[Tuple[str, str], ...], int], Any] = {}
+
     def get_json(self, url: str, params: Optional[Dict[str, str]] = None, timeout: int = 10):
+        params_key = tuple(sorted((params or {}).items()))
+        cache_key = (url, params_key, timeout)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
         if params:
             query = urlencode(params)
             separator = "&" if "?" in url else "?"
@@ -143,10 +511,17 @@ class JsonHttpClient:
             with urlopen(request, timeout=timeout) as response:
                 raw = response.read().decode("utf-8")
                 if not raw:
+                    self._cache[cache_key] = None
                     return None
-                return json.loads(raw)
+                payload = json.loads(raw)
+                self._cache[cache_key] = payload
+                return payload
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
+            self._cache[cache_key] = None
             return None
+
+    def get_cache_stats(self) -> Dict[str, int]:
+        return {"request_cache_enabled": True, "cached_requests": len(self._cache)}
 
 
 def _walk_leaf_strings(value):
@@ -195,6 +570,7 @@ class SangerApiResolver:
 
     def _candidate_requests(self, normalized: str, identifier_type: str):
         requests = []
+        include_param = {"include": "identifiers"} if identifier_type in {"cvcl", "rrid"} else None
         detail_paths = [
             f"/models/{normalized}",
             f"/model/{normalized}",
@@ -210,13 +586,13 @@ class SangerApiResolver:
 
         for base_url in self.base_urls:
             for path in detail_paths:
-                requests.append((f"{base_url}{path}", None))
+                requests.append((f"{base_url}{path}", include_param))
             for token in search_candidates:
-                requests.append((f"{base_url}/search", {"q": token}))
-                requests.append((f"{base_url}/models", {"search": token}))
-                requests.append((f"{base_url}/models", {"q": token}))
-                requests.append((f"{base_url}/passports", {"search": token}))
-                requests.append((f"{base_url}/model_list", {"search": token}))
+                requests.append((f"{base_url}/search", {"q": token, **({"include": "identifiers"} if include_param else {})}))
+                requests.append((f"{base_url}/models", {"search": token, **({"include": "identifiers"} if include_param else {})}))
+                requests.append((f"{base_url}/models", {"q": token, **({"include": "identifiers"} if include_param else {})}))
+                requests.append((f"{base_url}/passports", {"search": token, **({"include": "identifiers"} if include_param else {})}))
+                requests.append((f"{base_url}/model_list", {"search": token, **({"include": "identifiers"} if include_param else {})}))
         return requests
 
     def resolve_one(self, identifier: object) -> CellLineResolutionResult:
@@ -239,16 +615,110 @@ class SangerApiResolver:
                 source="sanger",
             )
 
-        all_sidm_matches = []
-        for url, params in self._candidate_requests(normalized, identifier_type):
-            payload = self.http.get_json(url, params=params, timeout=self.timeout)
-            if payload is None:
-                continue
-            sidms = _extract_matches(payload, SIDM_SCAN_PATTERN)
-            if sidms:
-                for sidm in sidms:
-                    if sidm not in all_sidm_matches:
-                        all_sidm_matches.append(sidm)
+        if identifier_type in {"cvcl", "rrid"}:
+            raw_hit_count = 0
+            matched_records: List[Dict[str, Any]] = []
+            sidm_sources: List[Dict[str, str]] = []
+            matched_identifier_ids: List[str] = []
+            linked_identifier_records: List[Dict[str, Any]] = []
+            printed_first_exact_model = False
+            cvcl_token = extract_cvcl(normalized)
+
+            for url, params in self._candidate_requests(normalized, identifier_type):
+                payload = self.http.get_json(url, params=params, timeout=self.timeout)
+                if payload is None or not isinstance(payload, dict):
+                    continue
+                data_records, included_records = _jsonapi_payload_records(payload)
+                raw_hit_count += len(data_records) + len(included_records)
+
+                for included in included_records:
+                    if included.get("type") != "model_identifier":
+                        continue
+                    included_value = _record_identifier_value(included)
+                    if not included_value:
+                        continue
+                    normalized_value = normalize_identifier(included_value)
+                    if normalized_value == normalized or (cvcl_token and extract_cvcl(normalized_value) == cvcl_token):
+                        included_id = str(included.get("id"))
+                        if included_id not in matched_identifier_ids:
+                            matched_identifier_ids.append(included_id)
+
+                for record in data_records:
+                    relationship_ids = _record_relationship_identifier_ids(record)
+                    if relationship_ids and any(identifier_id in matched_identifier_ids for identifier_id in relationship_ids):
+                        matched_records.append(record)
+                        if not printed_first_exact_model:
+                            linked_identifier_records = [
+                                included
+                                for included in included_records
+                                if included.get("type") == "model_identifier"
+                                and str(included.get("id")) in relationship_ids
+                            ]
+                            model_sidms = _extract_sidms_from_record(record)
+                            model_sidm = model_sidms[0] if model_sidms else None
+                            print(f"[SIDM][debug][exact_model] model_sidm={model_sidm}")
+                            print(f"[SIDM][debug][exact_model] model_record_type={record.get('type')} model_record_id={record.get('id')}")
+                            print(f"[SIDM][debug][exact_model] linked_identifier_records={linked_identifier_records}")
+                            for linked_record in linked_identifier_records:
+                                identifier_value = _record_identifier_value(linked_record)
+                                identifier_type_name = linked_record.get("type")
+                                identifier_name = None
+                                attributes = linked_record.get("attributes")
+                                if isinstance(attributes, dict):
+                                    identifier_name = attributes.get("name") or attributes.get("label") or attributes.get("identifier")
+                                if identifier_name is None:
+                                    identifier_name = linked_record.get("name")
+                                print(
+                                    f"[SIDM][debug][exact_model] linked_identifier type={identifier_type_name} name={identifier_name} value={identifier_value}"
+                                )
+                            printed_first_exact_model = True
+
+            matched_records = _dedupe_records(matched_records)
+            if matched_records:
+                sidm_candidates = _unique_values([
+                    sidm for record in matched_records for sidm in _extract_sidms_from_record(record)
+                ])
+                for record in matched_records:
+                    sidm_sources.extend(_extract_trusted_sidm_sources(record))
+
+                if len(sidm_candidates) == 1:
+                    return CellLineResolutionResult(
+                        input_raw=raw,
+                        input_normalized=normalized,
+                        detected_type=identifier_type,
+                        status="resolved",
+                        sidm=sidm_candidates[0],
+                        matched_on=identifier_type,
+                        source="sanger",
+                        raw_hit_count=raw_hit_count,
+                        exact_matched_record_count=len(matched_records),
+                        candidate_sidms=sidm_candidates,
+                        matched_records=matched_records,
+                        sidm_source_fields=sidm_sources,
+                        linked_identifier_records=linked_identifier_records,
+                    )
+                if len(sidm_candidates) > 1:
+                    return CellLineResolutionResult(
+                        input_raw=raw,
+                        input_normalized=normalized,
+                        detected_type=identifier_type,
+                        status="ambiguous",
+                        matched_on=identifier_type,
+                        candidate_sidms=sidm_candidates,
+                        source="sanger",
+                        raw_hit_count=raw_hit_count,
+                        exact_matched_record_count=len(matched_records),
+                        matched_records=matched_records,
+                        sidm_source_fields=sidm_sources,
+                        linked_identifier_records=linked_identifier_records,
+                    )
+
+        payloads = [self.http.get_json(url, params=params, timeout=self.timeout) for url, params in self._candidate_requests(normalized, identifier_type)]
+        payloads = [payload for payload in payloads if payload is not None]
+        raw_hit_count, matched_records, all_sidm_matches = _resolve_records_from_payloads(payloads, normalized, identifier_type)
+        sidm_sources: List[Dict[str, str]] = []
+        for record in matched_records:
+            sidm_sources.extend(_extract_trusted_sidm_sources(record))
 
         if len(all_sidm_matches) == 1:
             return CellLineResolutionResult(
@@ -259,6 +729,11 @@ class SangerApiResolver:
                 sidm=all_sidm_matches[0],
                 matched_on=identifier_type,
                 source="sanger",
+                raw_hit_count=raw_hit_count,
+                exact_matched_record_count=len(matched_records),
+                candidate_sidms=all_sidm_matches,
+                matched_records=matched_records,
+                sidm_source_fields=sidm_sources,
             )
         if len(all_sidm_matches) > 1:
             return CellLineResolutionResult(
@@ -269,6 +744,10 @@ class SangerApiResolver:
                 matched_on=identifier_type,
                 candidate_sidms=all_sidm_matches,
                 source="sanger",
+                raw_hit_count=raw_hit_count,
+                exact_matched_record_count=len(matched_records),
+                matched_records=matched_records,
+                sidm_source_fields=sidm_sources,
             )
         return CellLineResolutionResult(
             input_raw=raw,
@@ -276,6 +755,10 @@ class SangerApiResolver:
             detected_type=identifier_type,
             status="unresolved",
             source="sanger",
+            raw_hit_count=raw_hit_count,
+            exact_matched_record_count=len(matched_records),
+            matched_records=matched_records,
+            sidm_source_fields=sidm_sources,
         )
 
 
@@ -291,26 +774,97 @@ class CellosaurusApiResolver:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
-    def _query_payloads(self, normalized: str, identifier_type: str):
+    def _query_payload_entries(self, normalized: str, identifier_type: str):
         payloads = []
         cvcl = extract_cvcl(normalized)
         if cvcl:
+            detail_url = f"{self.base_url}/cell-line/{cvcl}"
             payload = self.http.get_json(
-                f"{self.base_url}/cell-line/{cvcl}",
+                detail_url,
                 params={"fields": "id,ac,sy,xref", "format": "json"},
                 timeout=self.timeout,
             )
             if payload is not None:
-                payloads.append(payload)
+                payloads.append((detail_url, payload))
 
+        search_url = f"{self.base_url}/search/cell-line"
         payload = self.http.get_json(
-            f"{self.base_url}/search/cell-line",
+            search_url,
             params={"q": normalized, "fields": "id,ac,sy,xref", "format": "json"},
             timeout=self.timeout,
         )
         if payload is not None:
-            payloads.append(payload)
+            payloads.append((search_url, payload))
         return payloads
+
+    def _query_payloads(self, normalized: str, identifier_type: str):
+        return [payload for _, payload in self._query_payload_entries(normalized, identifier_type)]
+
+    def _query_exact_records(self, normalized: str, identifier_type: str):
+        if identifier_type in {"cvcl", "rrid"}:
+            raw_hit_count = 0
+            matched_records: List[Dict[str, Any]] = []
+            sidm_sources: List[Dict[str, str]] = []
+            matched_identifier_ids: List[str] = []
+
+            for _, payload in self._query_payload_entries(normalized, identifier_type):
+                data_records, included_records = _jsonapi_payload_records(payload)
+                raw_hit_count += len(data_records) + len(included_records)
+
+                for included in included_records:
+                    if included.get("type") != "model_identifier":
+                        continue
+                    included_value = _record_identifier_value(included)
+                    if not included_value:
+                        continue
+                    normalized_value = normalize_identifier(included_value)
+                    if normalized_value == normalized or (extract_cvcl(normalized_value) and extract_cvcl(normalized_value) == extract_cvcl(normalized)):
+                        included_id = str(included.get("id"))
+                        if included_id not in matched_identifier_ids:
+                            matched_identifier_ids.append(included_id)
+
+                for record in data_records:
+                    if _record_relationship_identifier_ids(record) and any(identifier_id in matched_identifier_ids for identifier_id in _record_relationship_identifier_ids(record)):
+                        matched_records.append(record)
+
+            matched_records = _dedupe_records(matched_records)
+            if not matched_records:
+                # Fallback to direct field inspection for non-JSONAPI payload shapes.
+                for _, payload in self._query_payload_entries(normalized, identifier_type):
+                    records = _payload_to_records(payload)
+                    raw_hit_count += len(records)
+                    for record in records:
+                        if _record_matches_identifier(record, normalized, identifier_type):
+                            matched_records.append(record)
+                matched_records = _dedupe_records(matched_records)
+
+            sidm_candidates = _unique_values([
+                sidm for record in matched_records for sidm in _extract_sidms_from_record(record)
+            ])
+            for record in matched_records:
+                sidm_sources.extend(_extract_trusted_sidm_sources(record))
+            return raw_hit_count, matched_records, sidm_candidates, sidm_sources
+
+        raw_hit_count = 0
+        matched_records: List[Dict[str, Any]] = []
+        for url, payload in self._query_payload_entries(normalized, identifier_type):
+            records = _payload_to_records(payload)
+            raw_hit_count += len(records)
+            if "/cell-line/" in url:
+                matched_records.extend(records)
+                continue
+            for record in records:
+                if _record_matches_identifier(record, normalized, identifier_type):
+                    matched_records.append(record)
+
+        matched_records = _dedupe_records(matched_records)
+        sidm_candidates = _unique_values([
+            sidm for record in matched_records for sidm in _extract_sidms_from_record(record)
+        ])
+        sidm_sources: List[Dict[str, str]] = []
+        for record in matched_records:
+            sidm_sources.extend(_extract_trusted_sidm_sources(record))
+        return raw_hit_count, matched_records, sidm_candidates, sidm_sources
 
     def resolve_one(self, identifier: object) -> CellLineResolutionResult:
         raw = "" if identifier is None else str(identifier)
@@ -320,12 +874,7 @@ class CellosaurusApiResolver:
         if not normalized:
             return CellLineResolutionResult(raw, normalized, identifier_type, "unresolved", source="cellosaurus")
 
-        all_sidm_matches = []
-        for payload in self._query_payloads(normalized, identifier_type):
-            sidms = _extract_matches(payload, SIDM_SCAN_PATTERN)
-            for sidm in sidms:
-                if sidm not in all_sidm_matches:
-                    all_sidm_matches.append(sidm)
+        raw_hit_count, matched_records, all_sidm_matches, sidm_sources = self._query_exact_records(normalized, identifier_type)
 
         if len(all_sidm_matches) == 1:
             return CellLineResolutionResult(
@@ -336,6 +885,11 @@ class CellosaurusApiResolver:
                 sidm=all_sidm_matches[0],
                 matched_on=identifier_type,
                 source="cellosaurus",
+                raw_hit_count=raw_hit_count,
+                exact_matched_record_count=len(matched_records),
+                candidate_sidms=all_sidm_matches,
+                matched_records=matched_records,
+                sidm_source_fields=sidm_sources,
             )
         if len(all_sidm_matches) > 1:
             return CellLineResolutionResult(
@@ -346,6 +900,10 @@ class CellosaurusApiResolver:
                 matched_on=identifier_type,
                 candidate_sidms=all_sidm_matches,
                 source="cellosaurus",
+                raw_hit_count=raw_hit_count,
+                exact_matched_record_count=len(matched_records),
+                matched_records=matched_records,
+                sidm_source_fields=sidm_sources,
             )
         return CellLineResolutionResult(
             input_raw=raw,
@@ -353,17 +911,20 @@ class CellosaurusApiResolver:
             detected_type=identifier_type,
             status="unresolved",
             source="cellosaurus",
+            raw_hit_count=raw_hit_count,
+            exact_matched_record_count=len(matched_records),
+            matched_records=matched_records,
+            sidm_source_fields=sidm_sources,
         )
 
     def extract_bridge_identifiers(self, identifier: object) -> List[str]:
         """Extract possible bridge IDs (ACH/CVCL) from Cellosaurus payloads."""
         normalized = normalize_identifier(identifier)
         identifier_type = detect_identifier_type(normalized)
-        candidates = []
-        for payload in self._query_payloads(normalized, identifier_type):
-            ach_values = _extract_matches(payload, ACH_SCAN_PATTERN)
-            cvcl_values = _extract_matches(payload, CVCL_SCAN_PATTERN)
-            for token in ach_values + cvcl_values:
+        _, matched_records, _, _ = self._query_exact_records(normalized, identifier_type)
+        candidates: List[str] = []
+        for record in matched_records:
+            for token in _extract_bridge_ids_from_record(record):
                 if token not in candidates:
                     candidates.append(token)
         return candidates
@@ -397,15 +958,101 @@ class CellLineResolver:
         )
         self.use_cellosaurus_fallback = use_cellosaurus_fallback
         self._cache: Dict[str, CellLineResolutionResult] = {} if enable_cache else None
+        self.sidm_to_sidm: Dict[str, str] = {}
+        self.cvcl_to_sidm: Dict[str, str] = {}
+        self.rrid_to_sidm: Dict[str, str] = {}
+        self.ach_to_sidm: Dict[str, str] = {}
+        self.name_to_sidm: Dict[str, str] = {}
+
+    def _register_alias(self, lookup: Dict[str, str], alias: str, sidm: str) -> None:
+        if not alias or not sidm:
+            return
+        if alias not in lookup:
+            lookup[alias] = sidm
+
+    def _register_result(self, result: CellLineResolutionResult) -> None:
+        if result.status != "resolved" or not result.sidm:
+            return
+
+        sidm = result.sidm
+        self._register_alias(self.sidm_to_sidm, sidm, sidm)
+        self._register_alias(self.sidm_to_sidm, result.input_normalized, sidm)
+        self._register_alias(self.sidm_to_sidm, result.input_raw, sidm)
+
+        if result.detected_type == "model_id":
+            self._register_alias(self.ach_to_sidm, result.input_normalized, sidm)
+            self._register_alias(self.ach_to_sidm, normalize_identifier(result.input_raw), sidm)
+        elif result.detected_type == "rrid":
+            self._register_alias(self.rrid_to_sidm, result.input_normalized, sidm)
+            cvcl = extract_cvcl(result.input_normalized)
+            if cvcl:
+                self._register_alias(self.cvcl_to_sidm, cvcl, sidm)
+                self._register_alias(self.rrid_to_sidm, f"RRID:{cvcl}", sidm)
+        elif result.detected_type == "cvcl":
+            cvcl = extract_cvcl(result.input_normalized) or result.input_normalized
+            self._register_alias(self.cvcl_to_sidm, cvcl, sidm)
+            self._register_alias(self.rrid_to_sidm, f"RRID:{cvcl}", sidm)
+        elif result.detected_type == "name":
+            self._register_alias(self.name_to_sidm, normalize_name_key(result.input_normalized), sidm)
+            self._register_alias(self.name_to_sidm, normalize_name_key(result.input_raw), sidm)
+
+        for record in result.matched_records or []:
+            for token in _extract_identifier_tokens_from_record(record, result.detected_type):
+                if result.detected_type == "model_id" and token.startswith("ACH-"):
+                    self._register_alias(self.ach_to_sidm, token, sidm)
+                elif result.detected_type in {"cvcl", "rrid"}:
+                    if token.startswith("RRID:CVCL_"):
+                        self._register_alias(self.rrid_to_sidm, token, sidm)
+                        cvcl = extract_cvcl(token)
+                        if cvcl:
+                            self._register_alias(self.cvcl_to_sidm, cvcl, sidm)
+                    elif token.startswith("CVCL_"):
+                        self._register_alias(self.cvcl_to_sidm, token, sidm)
+                        self._register_alias(self.rrid_to_sidm, f"RRID:{token}", sidm)
+                elif result.detected_type == "name":
+                    self._register_alias(self.name_to_sidm, token, sidm)
+                elif result.detected_type == "sidm" and token.startswith("SIDM"):
+                    self._register_alias(self.sidm_to_sidm, token, sidm)
+
+        for record in result.linked_identifier_records or []:
+            linked_value = _record_identifier_value(record)
+            if not linked_value:
+                continue
+            normalized_linked_value = normalize_identifier(linked_value)
+            if normalized_linked_value.startswith("ACH-"):
+                self._register_alias(self.ach_to_sidm, normalized_linked_value, sidm)
+
+        if result.detected_type in {"cvcl", "rrid"}:
+            cvcl = extract_cvcl(result.input_normalized)
+            if cvcl:
+                self._register_alias(self.cvcl_to_sidm, cvcl, sidm)
+                self._register_alias(self.rrid_to_sidm, f"RRID:{cvcl}", sidm)
+
+    def _lookup_local(self, normalized: str, identifier_type: str) -> Optional[str]:
+        if identifier_type == "sidm":
+            return self.sidm_to_sidm.get(normalized) or normalized
+        if identifier_type == "model_id":
+            return self.ach_to_sidm.get(normalized)
+        if identifier_type == "rrid":
+            return self.rrid_to_sidm.get(normalized) or self.cvcl_to_sidm.get(extract_cvcl(normalized) or "")
+        if identifier_type == "cvcl":
+            cvcl = extract_cvcl(normalized) or normalized
+            return self.cvcl_to_sidm.get(cvcl) or self.rrid_to_sidm.get(f"RRID:{cvcl}")
+        if identifier_type == "name":
+            return self.name_to_sidm.get(normalize_name_key(normalized))
+        return None
+
+    def get_alias_to_sidm(self) -> Dict[str, str]:
+        alias_to_sidm: Dict[str, str] = {}
+        for lookup in (self.sidm_to_sidm, self.cvcl_to_sidm, self.rrid_to_sidm, self.ach_to_sidm, self.name_to_sidm):
+            for alias, sidm in lookup.items():
+                if alias and alias not in alias_to_sidm:
+                    alias_to_sidm[alias] = sidm
+        return alias_to_sidm
 
     def resolve_one(self, identifier: object) -> CellLineResolutionResult:
         raw = "" if identifier is None else str(identifier)
         normalized = normalize_identifier(raw)
-        
-        # Check cache first
-        if self._cache is not None and normalized in self._cache:
-            return self._cache[normalized]
-        
         identifier_type = detect_identifier_type(normalized)
 
         if not normalized:
@@ -414,8 +1061,32 @@ class CellLineResolver:
                 self._cache[normalized] = result
             return result
 
+        if self._cache is not None and normalized in self._cache:
+            return self._cache[normalized]
+
+        local_sidm = self._lookup_local(normalized, identifier_type)
+        if local_sidm:
+            result = CellLineResolutionResult(
+                input_raw=raw,
+                input_normalized=normalized,
+                detected_type=identifier_type,
+                status="resolved",
+                sidm=local_sidm,
+                matched_on=identifier_type,
+                source="cache",
+                candidate_sidms=[local_sidm],
+                raw_hit_count=0,
+                exact_matched_record_count=0,
+                sidm_source_fields=[],
+            )
+            if self._cache is not None:
+                self._cache[normalized] = result
+            return result
+
         primary = self.sanger.resolve_one(identifier)
         if primary.status == "resolved" or primary.status == "ambiguous":
+            if primary.status == "resolved":
+                self._register_result(primary)
             if self._cache is not None:
                 self._cache[normalized] = primary
             return primary
@@ -427,18 +1098,52 @@ class CellLineResolver:
 
         fallback = self.cellosaurus.resolve_one(identifier)
         if fallback.status == "resolved" or fallback.status == "ambiguous":
+            if fallback.status == "resolved":
+                self._register_result(fallback)
             if self._cache is not None:
                 self._cache[normalized] = fallback
             return fallback
 
-        # Try bridge identifiers discovered from Cellosaurus (e.g., ACH/CVCL).
+        bridge_candidates = []
         for token in self.cellosaurus.extract_bridge_identifiers(identifier):
             bridged = self.sanger.resolve_one(token)
-            if bridged.status == "resolved":
-                bridged.source = "cellosaurus->sanger"
-                if self._cache is not None:
-                    self._cache[normalized] = bridged
-                return bridged
+            if bridged.status == "resolved" and bridged.sidm:
+                if bridged.sidm not in bridge_candidates:
+                    bridge_candidates.append(bridged.sidm)
+                self._register_result(bridged)
+            elif bridged.status == "ambiguous" and bridged.candidate_sidms:
+                for sidm in bridged.candidate_sidms:
+                    if sidm not in bridge_candidates:
+                        bridge_candidates.append(sidm)
+
+        if len(bridge_candidates) == 1:
+            result = CellLineResolutionResult(
+                input_raw=raw,
+                input_normalized=normalized,
+                detected_type=identifier_type,
+                status="resolved",
+                sidm=bridge_candidates[0],
+                matched_on=identifier_type,
+                source="cellosaurus->sanger",
+                candidate_sidms=bridge_candidates,
+            )
+            if self._cache is not None:
+                self._cache[normalized] = result
+            self._register_result(result)
+            return result
+        if len(bridge_candidates) > 1:
+            result = CellLineResolutionResult(
+                input_raw=raw,
+                input_normalized=normalized,
+                detected_type=identifier_type,
+                status="ambiguous",
+                matched_on=identifier_type,
+                candidate_sidms=bridge_candidates,
+                source="cellosaurus->sanger",
+            )
+            if self._cache is not None:
+                self._cache[normalized] = result
+            return result
 
         if self._cache is not None:
             self._cache[normalized] = primary
@@ -451,9 +1156,28 @@ class CellLineResolver:
     
     def get_cache_stats(self) -> Dict[str, int]:
         """Return cache statistics (e.g., for logging)."""
+        request_stats = self.sanger.http.get_cache_stats() if hasattr(self.sanger.http, "get_cache_stats") else {"cached_requests": 0}
         if self._cache is None:
-            return {"cache_enabled": False}
-        return {"cache_enabled": True, "cached_identifiers": len(self._cache)}
+            return {
+                "cache_enabled": False,
+                "cached_identifiers": 0,
+                "cached_requests": request_stats.get("cached_requests", 0),
+                "sidm_to_sidm": len(self.sidm_to_sidm),
+                "cvcl_to_sidm": len(self.cvcl_to_sidm),
+                "rrid_to_sidm": len(self.rrid_to_sidm),
+                "ach_to_sidm": len(self.ach_to_sidm),
+                "name_to_sidm": len(self.name_to_sidm),
+            }
+        return {
+            "cache_enabled": True,
+            "cached_identifiers": len(self._cache),
+            "cached_requests": request_stats.get("cached_requests", 0),
+            "sidm_to_sidm": len(self.sidm_to_sidm),
+            "cvcl_to_sidm": len(self.cvcl_to_sidm),
+            "rrid_to_sidm": len(self.rrid_to_sidm),
+            "ach_to_sidm": len(self.ach_to_sidm),
+            "name_to_sidm": len(self.name_to_sidm),
+        }
 
 
 def resolve_identifiers_to_sidm(
@@ -472,7 +1196,16 @@ def resolve_identifiers_to_sidm(
     results: List[CellLineResolutionResult] = []
 
     for value in identifiers:
-        result = resolver.resolve_one(value)
+        try:
+            result = resolver.resolve_one(value)
+        except Exception:
+            result = CellLineResolutionResult(
+                input_raw="" if value is None else str(value),
+                input_normalized=normalize_identifier(value),
+                detected_type=detect_identifier_type(value),
+                status="unresolved",
+                source="sanger",
+            )
         results.append(result)
         if result.status == "resolved" and result.sidm is not None:
             sidm_dict[result.sidm] = result.input_raw
@@ -525,7 +1258,16 @@ def resolve_model_ids_to_sidm(
     resolver = CellLineResolver(use_cellosaurus_fallback=True)
     for value in model_ids:
         normalized_model_id = normalize_identifier(value)
-        result = resolver.resolve_one(normalized_model_id)
+        try:
+            result = resolver.resolve_one(normalized_model_id)
+        except Exception:
+            result = CellLineResolutionResult(
+                input_raw=str(value),
+                input_normalized=normalized_model_id,
+                detected_type=detect_identifier_type(normalized_model_id),
+                status="unresolved",
+                source="sanger",
+            )
         if result.status == "resolved" and result.sidm is not None:
             model_to_sidm[normalized_model_id] = result.sidm
         elif normalized_model_id not in seen_missing:
@@ -595,8 +1337,32 @@ def resolve_sidm_from_dataframe(
 
     # Keep detailed per-row results and alias map for resolved rows
     resolution_results = []
-    alias_to_sidm: Dict[str, str] = {}
+    cvcl_debug_emitted = False
 
+    def _print_cvcl_record_debug(query_identifier: str, row_index: int) -> None:
+        normalized_query = normalize_identifier(query_identifier)
+        identifier_type = detect_identifier_type(normalized_query)
+        raw_records: List[Dict[str, Any]] = []
+        for url, params in resolver.sanger._candidate_requests(normalized_query, identifier_type):
+            payload = resolver.sanger.http.get_json(url, params=params, timeout=resolver.sanger.timeout)
+            if payload is None:
+                continue
+            raw_records.extend(_payload_to_records(payload))
+        if not raw_records:
+            print(f"[SIDM][debug][row={row_index}] no raw records found for {query_identifier}")
+            return
+
+        keywords = ("cvcl", "cellosaurus", "rrid", "xref", "identifier", "accession")
+        #print(f"[SIDM][debug][row={row_index}] raw_record_count={len(raw_records)}")
+        for record_index, record in enumerate(raw_records[:2], start=1):
+            matching_fields: List[Dict[str, str]] = []
+            for path, value in _walk_record_fields(record):
+                path_text = ".".join(path).lower()
+                value_text = str(value).lower()
+                if any(keyword in path_text or keyword in value_text for keyword in keywords):
+                    matching_fields.append({"field": ".".join(path), "value": str(value)})
+            #print(f"[SIDM][debug][row={row_index}] raw_record_{record_index}_top_level_keys={top_level_keys}")
+            #print(f"[SIDM][debug][row={row_index}] raw_record_{record_index}_matching_fields={matching_fields}")
     for row_idx, row in df.iterrows():
         row_identifier = None
         for col in available_id_cols:
@@ -607,8 +1373,20 @@ def resolve_sidm_from_dataframe(
 
         if row_identifier is None:
             resolution_counts['unresolved'] += 1
+            resolution_results.append(
+                CellLineResolutionResult(
+                    input_raw="",
+                    input_normalized="",
+                    detected_type="name",
+                    status="unresolved",
+                    source="sanger",
+                )
+            )
             if verbose:
-                print(f"[SIDM][row={row_idx}] unresolved: empty identifier row")
+                print(
+                    f"[SIDM][row={row_idx}] input_cell_line_name='' input_identifier='' "
+                    f"detected_type=name raw_hit_count=0 exact_matched_record_count=0 sidm_candidates=[] status=unresolved"
+                )
             continue
 
         display_name = row_identifier
@@ -620,58 +1398,93 @@ def resolve_sidm_from_dataframe(
                 display_name = str(value).strip()
                 break
 
-        result = resolver.resolve_one(row_identifier)
-        if result.status != "resolved":
-            # Fallback to display name if it differs from identifier.
-            if display_name != row_identifier:
-                result = resolver.resolve_one(display_name)
+        if verbose and not cvcl_debug_emitted and detect_identifier_type(row_identifier) in {"cvcl", "rrid"}:
+            _print_cvcl_record_debug(row_identifier, row_idx)
+            cvcl_debug_emitted = True
 
-        # record detailed result
+        try:
+            result = resolver.resolve_one(row_identifier)
+        except Exception as exc:
+            if verbose:
+                print(f"[SIDM][row={row_idx}] resolution error for '{row_identifier}': {exc}")
+            result = CellLineResolutionResult(
+                input_raw=row_identifier,
+                input_normalized=normalize_identifier(row_identifier),
+                detected_type=detect_identifier_type(row_identifier),
+                status="unresolved",
+                source="sanger",
+            )
+
+        if result.status == "unresolved" and display_name != row_identifier:
+            try:
+                fallback_result = resolver.resolve_one(display_name)
+            except Exception as exc:
+                if verbose:
+                    print(f"[SIDM][row={row_idx}] display-name fallback failed for '{display_name}': {exc}")
+                fallback_result = None
+            if fallback_result is not None and fallback_result.status != "unresolved":
+                result = fallback_result
+
         resolution_results.append(result)
 
         if result.status == "resolved" and result.sidm is not None:
-            sidm = result.sidm
-            sidm_dict[sidm] = display_name
+            sidm_dict[result.sidm] = display_name
             resolution_counts['resolved'] += 1
             if verbose:
                 print(
-                    f"[SIDM][row={row_idx}] resolved '{row_identifier}' -> {sidm} "
-                    f"(source={result.source}, matched_on={result.matched_on})"
+                    f"[SIDM][row={row_idx}] input_cell_line_name='{display_name}' "
+                    f"input_identifier='{row_identifier}' detected_type={result.detected_type} "
+                    f"raw_hit_count={getattr(result, 'raw_hit_count', 0)} "
+                    f"exact_matched_record_count={getattr(result, 'exact_matched_record_count', 0)} "
+                    f"sidm_candidates={(result.candidate_sidms or [result.sidm])} status={result.status}"
                 )
-            # add canonicalized aliases for this resolved row
-            if result.input_normalized:
-                alias_to_sidm[result.input_normalized] = sidm
-            # also map the raw input and the chosen display name
-            alias_to_sidm[result.input_raw] = sidm
-            if display_name and display_name != result.input_raw:
-                alias_to_sidm[display_name] = sidm
         elif result.status == "ambiguous":
             resolution_counts['ambiguous'] += 1
             not_found.append(row_identifier)
             if verbose:
+                matched_record_keys = [list(record.keys()) for record in (result.matched_records or [])]
                 print(
-                    f"[SIDM][row={row_idx}] ambiguous '{row_identifier}' "
-                    f"candidates={result.candidate_sidms}"
+                    f"[SIDM][row={row_idx}] input_cell_line_name='{display_name}' "
+                    f"input_identifier='{row_identifier}' detected_type={result.detected_type} "
+                    f"raw_hit_count={getattr(result, 'raw_hit_count', 0)} "
+                    f"exact_matched_record_count={getattr(result, 'exact_matched_record_count', 0)} "
+                    f"sidm_candidates={result.candidate_sidms or []} status={result.status}"
                 )
+                print(f"[SIDM][row={row_idx}] matched_record_keys={matched_record_keys}")
+                print(f"[SIDM][row={row_idx}] sidm_source_fields={result.sidm_source_fields or []}")
         else:
             resolution_counts['unresolved'] += 1
             not_found.append(row_identifier)
             if verbose:
-                print(f"[SIDM][row={row_idx}] unresolved '{row_identifier}'")
+                print(
+                    f"[SIDM][row={row_idx}] input_cell_line_name='{display_name}' "
+                    f"input_identifier='{row_identifier}' detected_type={result.detected_type} "
+                    f"raw_hit_count={getattr(result, 'raw_hit_count', 0)} "
+                    f"exact_matched_record_count={getattr(result, 'exact_matched_record_count', 0)} "
+                    f"sidm_candidates={result.candidate_sidms or []} status={result.status}"
+                )
 
-    # Add cache statistics
+    alias_to_sidm = resolver.get_alias_to_sidm()
     resolution_counts['cache_stats'] = resolver.get_cache_stats()
-    # expose alias mapping and detailed results to callers (training will use alias map)
     resolution_counts['alias_to_sidm'] = alias_to_sidm
     resolution_counts['detailed_results'] = resolution_results
 
     if verbose:
+        ach_aliases = sorted(alias for alias in alias_to_sidm if normalize_identifier(alias).startswith("ACH-"))
+        sidm_alias_groups: Dict[str, List[str]] = {}
+        for alias, sidm in alias_to_sidm.items():
+            sidm_alias_groups.setdefault(sidm, []).append(alias)
         print("[SIDM] Resolution summary:")
         print(f"  total_rows: {resolution_counts['total_rows']}")
         print(f"  resolved: {resolution_counts['resolved']}")
         print(f"  ambiguous: {resolution_counts['ambiguous']}")
         print(f"  unresolved: {resolution_counts['unresolved']}")
         print(f"  alias_count: {len(alias_to_sidm)}")
+        print(f"  ach_alias_count: {len(ach_aliases)}")
+        print(f"  ach_aliases_preview: {ach_aliases[:10]}")
+        for sidm in sorted(sidm_alias_groups):
+            print(f"  aliases_for_{sidm}: {sorted(sidm_alias_groups[sidm])}")
+        print(f"  cache_stats: {resolution_counts['cache_stats']}")
 
     return sidm_dict, not_found, resolution_counts
 

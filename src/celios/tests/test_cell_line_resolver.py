@@ -40,12 +40,19 @@ def test_detect_identifier_type():
     assert detect_identifier_type("A549") == "name"
 
 
+def test_cvcl_identifier_normalization_and_detection():
+    assert normalize_identifier("CVCL_0218") == "CVCL_0218"
+    assert normalize_identifier("RRID:CVCL_0218") == "RRID:CVCL_0218"
+    assert detect_identifier_type("CVCL_0218") == "cvcl"
+    assert detect_identifier_type("RRID:CVCL_0218") == "rrid"
+
+
 def test_sanger_primary_resolution_by_model_id():
     response_map = {
         (
             "https://api.cellmodelpassports.sanger.ac.uk/search",
             (("q", "ACH-000681"),),
-        ): {"results": [{"SangerModelID": "SIDM00872"}]},
+        ): {"results": [{"ModelID": "ACH-000681", "SangerModelID": "SIDM00872"}]},
     }
     resolver = CellLineResolver(http_client=FakeHttpClient(response_map), use_cellosaurus_fallback=False)
     result = resolver.resolve_one("ACH-000681")
@@ -73,9 +80,8 @@ def test_cellosaurus_fallback_resolution():
     }
     resolver = CellLineResolver(http_client=FakeHttpClient(response_map), use_cellosaurus_fallback=True)
     result = resolver.resolve_one("RRID:CVCL_0023")
-    assert result.status == "resolved"
-    assert result.sidm == "SIDM00872"
-    assert result.source == "cellosaurus"
+    assert result.status == "unresolved"
+    assert result.sidm is None
 
 
 def test_cellosaurus_bridge_to_sanger_resolution():
@@ -89,7 +95,7 @@ def test_cellosaurus_bridge_to_sanger_resolution():
         (
             "https://api.cellosaurus.org/search/cell-line",
             (("fields", "id,ac,sy,xref"), ("format", "json"), ("q", "A549")),
-        ): {"hits": [{"xref": ["DepMap: ACH-000681"]}]},
+        ): {"hits": [{"name": "A549", "xref": ["DepMap: ACH-000681"]}]},
         # Sanger resolves bridged ACH
         (
             "https://api.cellmodelpassports.sanger.ac.uk/search",
@@ -101,6 +107,71 @@ def test_cellosaurus_bridge_to_sanger_resolution():
     assert result.status == "resolved"
     assert result.sidm == "SIDM00872"
     assert result.source == "cellosaurus->sanger"
+
+
+def test_exact_matched_record_uses_trusted_sidm_fields_only():
+    response_map = {
+        (
+            "https://api.cellmodelpassports.sanger.ac.uk/search",
+            (("q", "CVCL_0025"),),
+        ): {
+            "hits": [
+                {
+                    "ac": "CVCL_0025",
+                    "name": "Example",
+                    "sidm": "SIDM00891",
+                    "aliases": ["SIDM01233"],
+                    "related": {"sidm": "SIDM09999"},
+                }
+            ]
+        },
+    }
+
+    resolver = CellLineResolver(http_client=FakeHttpClient(response_map), use_cellosaurus_fallback=False)
+    result = resolver.resolve_one("CVCL_0025")
+
+    assert result.status == "resolved"
+    assert result.sidm == "SIDM00891"
+    assert result.candidate_sidms == ["SIDM00891"]
+    assert result.exact_matched_record_count == 1
+    assert result.sidm_source_fields == [
+        {"sidm": "SIDM00891", "source_field": "sidm", "raw_value": "SIDM00891"}
+    ]
+
+
+def test_cvcl_resolution_backfills_trusted_ach_alias_from_exact_model_record():
+    response_map = {
+        (
+            "https://api.cellmodelpassports.sanger.ac.uk/search",
+            (("include", "identifiers"), ("q", "CVCL_0218")),
+        ): {
+            "data": [
+                {
+                    "type": "model",
+                    "id": "SIDM00826",
+                    "ModelID": "ACH-000111",
+                    "SangerModelID": "SIDM00826",
+                    "relationships": {
+                        "identifiers": {"data": [{"id": "model_identifier_1"}]}
+                    },
+                }
+            ],
+            "included": [
+                {
+                    "type": "model_identifier",
+                    "id": "model_identifier_1",
+                    "attributes": {"identifier": "CVCL_0218"},
+                }
+            ],
+        },
+    }
+
+    resolver = CellLineResolver(http_client=FakeHttpClient(response_map), use_cellosaurus_fallback=False)
+    result = resolver.resolve_one("CVCL_0218")
+
+    assert result.status == "resolved"
+    assert result.sidm == "SIDM00826"
+    assert resolver.get_alias_to_sidm()["ACH-000111"] == "SIDM00826"
 
 
 def test_resolve_identifiers_to_sidm_smoke(monkeypatch):

@@ -66,8 +66,11 @@ def resolve_cell_lines(cell_line_file: Optional[str] = None, df: Optional[pd.Dat
         resolved = resolution_report.get('resolved') if isinstance(resolution_report, dict) else None
         unresolved = resolution_report.get('unresolved') if isinstance(resolution_report, dict) else None
         alias_map = resolution_report.get('alias_to_sidm') if isinstance(resolution_report, dict) else None
+        cache_stats = resolution_report.get('cache_stats') if isinstance(resolution_report, dict) else None
         print(f"[SIDM] Resolution summary: total={total}, resolved={resolved}, unresolved={unresolved}")
         print(f"[SIDM] Alias map size: {len(alias_map) if alias_map else 0}")
+        if cache_stats is not None:
+            print(f"[SIDM] Cache stats: {cache_stats}")
     alias_map = resolution_report.get("alias_to_sidm", {}) if isinstance(resolution_report, dict) else {}
     sidm_list = list(sidm_dict.keys())
     return sidm_list, sidm_dict, alias_map, resolution_report

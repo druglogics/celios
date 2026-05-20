@@ -19,6 +19,33 @@ from celios.utils.io import load_csv_file, load_sidm_from_modelid
 
 logger = logging.getLogger(__name__)
 
+OLD_GENE_HEADER_NAMES = {
+    "gene_symbol",
+    "symbol",
+    "gene",
+    "hugo_symbol",
+    "hugosymbol",
+}
+
+
+def _normalize_header_token(token: str) -> str:
+    return str(token).strip().strip('"').strip("'").lower()
+
+
+def _detect_old_gene_column(columns) -> str:
+    normalized_columns = [_normalize_header_token(column) for column in columns]
+
+    if normalized_columns and normalized_columns[0] in OLD_GENE_HEADER_NAMES:
+        return columns[0]
+
+    if len(columns) > 1 and normalized_columns[0].startswith("unnamed") and normalized_columns[1] in OLD_GENE_HEADER_NAMES:
+        return columns[1]
+
+    raise ValueError(
+        "Cannot detect old binary matrix gene identifier column. "
+        f"Expected one of {sorted(OLD_GENE_HEADER_NAMES)} in the first column."
+    )
+
 
 class FormatDetector:
     """Detect binary matrix format by inspecting file headers."""
@@ -54,18 +81,24 @@ class FormatDetector:
         except Exception as e:
             raise ValueError(f"Cannot read file {filepath}: {e}")
 
-        # Check for format indicators in header
-        if "gene_symbol" in header:
+        # Check for format indicators in the header tokens
+        header_tokens = header.split(",")
+        normalized_tokens = [_normalize_header_token(token) for token in header_tokens]
+
+        if normalized_tokens and normalized_tokens[0] in OLD_GENE_HEADER_NAMES:
             logger.info(f"Auto-detected OLD binary format from {Path(filepath).name}")
             return "old"
-        elif "ModelID" in header or "model_id" in header.lower():
+        if len(normalized_tokens) > 1 and normalized_tokens[0] in {"", "unnamed: 0", "unnamed:0"} and normalized_tokens[1] in OLD_GENE_HEADER_NAMES:
+            logger.info(f"Auto-detected OLD binary format from {Path(filepath).name}")
+            return "old"
+        if normalized_tokens and normalized_tokens[0] == "modelid":
             logger.info(f"Auto-detected 26Q1 binary format from {Path(filepath).name}")
             return "26q1"
-        else:
-            raise ValueError(
-                f"Cannot auto-detect binary matrix format from {filepath}. "
-                "Expected 'gene_symbol' (old) or 'ModelID' (26Q1) in header."
-            )
+
+        raise ValueError(
+            f"Cannot auto-detect binary matrix format from {filepath}. "
+            "Expected an old-style gene column (e.g. 'symbol') or 'ModelID' in header."
+        )
 
 
 class BinaryMatrixParser(ABC):
@@ -76,7 +109,10 @@ class BinaryMatrixParser(ABC):
         self.verbose = verbose
 
     def load(
-        self, filepath: str, model_registry: Optional[str] = None
+        self,
+        filepath: str,
+        model_registry: Optional[str] = None,
+        resolve_model_ids: bool = True,
     ) -> Tuple[pd.DataFrame, Dict]:
         """
         Load and parse binary matrix file.
@@ -90,12 +126,15 @@ class BinaryMatrixParser(ABC):
             - DataFrame: genes as index, SIDM as columns, binary values
             - metadata_dict: {'format': format_name, 'shape': (n_genes, n_samples), ...}
         """
-        df, metadata = self._parse(filepath, model_registry)
+        df, metadata = self._parse(filepath, model_registry, resolve_model_ids=resolve_model_ids)
         return df, metadata
 
     @abstractmethod
     def _parse(
-        self, filepath: str, model_registry: Optional[str] = None
+        self,
+        filepath: str,
+        model_registry: Optional[str] = None,
+        resolve_model_ids: bool = True,
     ) -> Tuple[pd.DataFrame, Dict]:
         """Parse file and return normalized DataFrame. Implemented by subclasses."""
         pass
@@ -105,7 +144,10 @@ class OldBinaryMatrixParser(BinaryMatrixParser):
     """Parser for OLD binary format (genes × SIDM)."""
 
     def _parse(
-        self, filepath: str, model_registry: Optional[str] = None
+        self,
+        filepath: str,
+        model_registry: Optional[str] = None,
+        resolve_model_ids: bool = True,
     ) -> Tuple[pd.DataFrame, Dict]:
         """
         Parse OLD format: gene_symbol index, SIDM columns.
@@ -115,8 +157,10 @@ class OldBinaryMatrixParser(BinaryMatrixParser):
         """
         logger.info(f"Parsing OLD binary format from {Path(filepath).name}")
 
-        # Read with gene_symbol as index (column 1, skip the unnamed first column)
-        df = load_csv_file(filepath, index_col=1)  # Column 1 is 'gene_symbol'
+        df = load_csv_file(filepath)
+
+        gene_col = _detect_old_gene_column(df.columns)
+        df = df.set_index(gene_col)
         df.index.name = "gene_symbol"
 
         # Drop the unnamed index column if present
@@ -145,6 +189,9 @@ class OldBinaryMatrixParser(BinaryMatrixParser):
         metadata = {
             "format": "old",
             "shape": (n_genes, n_samples),
+            "input_shape": (n_genes, n_samples),
+            "sample_axis": "columns",
+            "raw_sample_ids": list(df.columns),
             "n_genes": n_genes,
             "n_samples": n_samples,
         }
@@ -161,7 +208,10 @@ class ModelIDBinaryMatrixParser(BinaryMatrixParser):
     """Parser for 26Q1 binary format (ModelID × genes, transposed to genes × SIDM)."""
 
     def _parse(
-        self, filepath: str, model_registry: Optional[str] = None
+        self,
+        filepath: str,
+        model_registry: Optional[str] = None,
+        resolve_model_ids: bool = True,
     ) -> Tuple[pd.DataFrame, Dict]:
         """
         Parse 26Q1 format: ModelID index, gene columns.
@@ -174,6 +224,7 @@ class ModelIDBinaryMatrixParser(BinaryMatrixParser):
 
         # Read with ModelID as index
         df = pd.read_csv(filepath, index_col=0)
+        input_shape = df.shape
 
         # Column 0 becomes the index (ModelID)
         model_ids = df.index.tolist()
@@ -181,25 +232,11 @@ class ModelIDBinaryMatrixParser(BinaryMatrixParser):
         if self.verbose:
             logger.info(f"Loaded {len(model_ids)} ModelIDs from file")
 
-        # Map ModelID → SIDM
-        model_to_sidm, not_found = load_sidm_from_modelid(
-            model_ids, model_registry=model_registry, verbose=self.verbose
-        )
-
-        if not_found:
-            logger.warning(f"ModelIDs not found in registry: {not_found}")
-
-        # Map index from ModelID to SIDM and drop any rows that could not be resolved.
-        df.index = df.index.map(model_to_sidm)
-        df = df[df.index.notna()]
-        df.index.name = "SIDM"
+        model_to_sidm = {}
+        not_found = []
 
         # Normalize gene symbols to uppercase (column names are genes)
         df.columns = df.columns.str.upper()
-
-        # Transpose to genes × SIDM
-        df = df.T
-        df.index.name = "gene_symbol"
 
         # Coerce values to numeric (preserve NaN for missing entries).
         # 26Q1 files may use empty cells for missing data which should NOT be
@@ -218,20 +255,67 @@ class ModelIDBinaryMatrixParser(BinaryMatrixParser):
             # Coerce unexpected values to NaN
             df = df.where(df.isin([0, 0.0, 1, 1.0]))
 
-        n_genes, n_samples = df.shape
+        if resolve_model_ids:
+            # Backward-compatible path: map ModelID → SIDM during parsing.
+            model_to_sidm, not_found = load_sidm_from_modelid(
+                model_ids, model_registry=model_registry, verbose=self.verbose
+            )
+
+            if not_found:
+                logger.warning(f"ModelIDs not found in registry: {not_found}")
+
+            # Map index from ModelID to SIDM and drop any rows that could not be resolved.
+            df.index = df.index.map(model_to_sidm)
+            df = df[df.index.notna()]
+            df.index.name = "SIDM"
+
+            # Transpose to genes × SIDM
+            df = df.T
+            df.index.name = "gene_symbol"
+
+            n_genes, n_samples = df.shape
+            metadata = {
+                "format": "26q1",
+                "shape": (n_genes, n_samples),
+                "input_shape": input_shape,
+                "sample_axis": "columns",
+                "raw_sample_ids": model_ids,
+                "n_genes": n_genes,
+                "n_samples": n_samples,
+                "model_ids_mapped": len(model_to_sidm),
+                "model_ids_not_found": len(not_found),
+                "resolve_model_ids": resolve_model_ids,
+            }
+
+            if self.verbose:
+                logger.info(
+                    f"26Q1 binary matrix: {n_genes} genes × {n_samples} SIDM samples "
+                    f"(mapped {len(model_to_sidm)} ModelIDs)"
+                )
+
+            return df, metadata
+
+        # Keep raw sample identifiers for local normalization in the builder.
+        df.index.name = "ModelID"
+
+        n_samples, n_genes = df.shape
         metadata = {
             "format": "26q1",
-            "shape": (n_genes, n_samples),
+            "shape": (n_samples, n_genes),
+            "input_shape": input_shape,
+            "sample_axis": "rows",
+            "raw_sample_ids": model_ids,
             "n_genes": n_genes,
             "n_samples": n_samples,
-            "model_ids_mapped": len(model_to_sidm),
-            "model_ids_not_found": len(not_found),
+            "model_ids_mapped": 0,
+            "model_ids_not_found": 0,
+            "resolve_model_ids": resolve_model_ids,
         }
 
         if self.verbose:
             logger.info(
-                f"26Q1 binary matrix: {n_genes} genes × {n_samples} SIDM samples "
-                f"(mapped {len(model_to_sidm)} ModelIDs)"
+                f"26Q1 binary matrix: {n_samples} ModelID samples × {n_genes} genes "
+                "(local SIDM resolution disabled)"
             )
 
         return df, metadata

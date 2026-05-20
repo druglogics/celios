@@ -8,8 +8,11 @@ functionality but keeps imports local to the features package.
 import pandas
 from pathlib import Path
 import re
+import time
+import statistics
 from ..utils.io import save_file
 from ..utils import report as report_mod
+from .node_mapping import normalize_symbol
 
 class Node:
     """
@@ -77,8 +80,12 @@ class Node:
         # Fixed default filename; user no longer provides this argument
         self.node_dict_file = 'node_dict.csv'
         self.hgnc_node_dict = None
+        # Store timing info from the last mapping run
+        self._last_node_timing = None
         # Cache for HGNC set to avoid reloading the file repeatedly
         self._HGNC_set_cache = None
+        # Cache for fast lookup dicts derived from the HGNC set
+        self._HGNC_lookup_cache = None
         # Flag to avoid re-processing the same input repeatedly
         self._node_input_processed = False
 
@@ -461,36 +468,93 @@ class Node:
         Returns:
             - hgnc_node_dict: dictionary containing node names and HGNC symbols.        
         '''
-        # Get the HGNC set
-        HGNC_set = self._get_HGNCset()
-
-        hgnc_node_dict = {} 
+        # Map nodes using a pre-built lookup index for O(1) symbol resolution
+        t0 = time.perf_counter()
         if self.verbose:
-            report_mod.add_log('Mapping nodes to HGNC symbols ...')
+            report_mod.add_log('Mapping nodes to HGNC symbols (optimized) ...')
+
+        # Load HGNC dataframe and build lookup index (cached on instance)
+        t_load0 = time.perf_counter()
+        hgnc_df = self._get_HGNCset()
+        t_load1 = time.perf_counter()
+
+        if getattr(self, '_HGNC_lookup_cache', None) is None:
+            t_build0 = time.perf_counter()
+            lookup = self._build_hgnc_lookup(hgnc_df)
+            self._HGNC_lookup_cache = lookup
+            t_build1 = time.perf_counter()
+            build_time = t_build1 - t_build0
+        else:
+            lookup = self._HGNC_lookup_cache
+            build_time = 0.0
+
+        approved = lookup['approved']
+        approved_meta = lookup['meta']
+        alias_map = lookup['alias']
+        prev_map = lookup['prev']
+
+        hgnc_node_dict = {}
+        per_node_times = []
+        alias_accum_time = 0.0
+
         for key, values_list in node_dict.items():
+            n0 = time.perf_counter()
             mapped_values = []
-
             for value in values_list:
-                matching_rows = HGNC_set[HGNC_set.apply(lambda x: value in x.values, axis=1)]
+                k = normalize_symbol(value)
+                matched = None
+                if not k:
+                    continue
+                if k in approved:
+                    matched = approved[k]
+                elif k in alias_map:
+                    matched = alias_map[k]
+                elif k in prev_map:
+                    matched = prev_map[k]
 
-                if not matching_rows.empty:
-                    for _, row in matching_rows.iterrows():
-                        mapped_symbols = [row['symbol']]
-                        if getattr(self, 'include_alias_prev', True):
-                            if pandas.notna(row['alias_symbol']):
-                                mapped_symbols.extend(row['alias_symbol'].split(', '))
-                            if pandas.notna(row['prev_symbol']):
-                                mapped_symbols.extend(row['prev_symbol'].split(', '))
-                        mapped_values.extend(mapped_symbols)
+                if matched is not None:
+                    # always include approved symbol
+                    mapped_values.append(matched)
+                    # optionally expand alias/prev lists from the metadata
+                    if getattr(self, 'include_alias_prev', True):
+                        ta0 = time.perf_counter()
+                        meta = approved_meta.get(normalize_symbol(matched))
+                        if meta:
+                            if meta.get('alias'):
+                                mapped_values.extend(meta['alias'])
+                            if meta.get('prev'):
+                                mapped_values.extend(meta['prev'])
+                        ta1 = time.perf_counter()
+                        alias_accum_time += (ta1 - ta0)
 
             hgnc_node_dict[key] = mapped_values
-        
+            per_node_times.append(time.perf_counter() - n0)
+
+        t1 = time.perf_counter()
+        total_time = t1 - t0
+        load_time = t_load1 - t_load0
+
+        # Record timing on instance for external callers
+        self._last_node_timing = {
+            'total': total_time,
+            'hgnc_load_time': load_time,
+            'lookup_build_time': build_time,
+            'per_node': {
+                'mean': statistics.mean(per_node_times) if per_node_times else 0.0,
+                'median': statistics.median(per_node_times) if per_node_times else 0.0,
+                'max': max(per_node_times) if per_node_times else 0.0,
+            },
+            'alias_expansion_time': alias_accum_time,
+        }
         if self.verbose:
-            report_mod.add_log('Nodes mapped to HGNC symbols successfully')
-            report_mod.add_log('Getting missing nodes ...')
+            report_mod.add_log(f"Nodes mapped to HGNC symbols successfully (total={total_time:.3f}s)")
+            report_mod.add_log(f"  HGNC load time: {load_time:.3f}s, lookup build time: {build_time:.3f}s")
+            if per_node_times:
+                report_mod.add_log(f"  per-node mapping: mean={self._last_node_timing['per_node']['mean']:.4f}s median={self._last_node_timing['per_node']['median']:.4f}s max={self._last_node_timing['per_node']['max']:.4f}s")
+            report_mod.add_log(f"  alias/prev expansion time: {alias_accum_time:.4f}s")
+
         # Complete values for of missing nodes
         hgnc_node_dict = self._get_missing_nodes(hgnc_node_dict, node_dict)
-
         return hgnc_node_dict
     
     #//////////////////////////////////////////////////////////
@@ -500,33 +564,102 @@ class Node:
         Returns:
             - hgnc_node_dict: dictionary containing node names and HGNC symbols.
         '''
-        # Get the HGNC set
-        HGNC_set = self._get_HGNCset()
+        # Use lookup index for UniProt mapping
+        t0 = time.perf_counter()
+        if self.verbose:
+            report_mod.add_log('Mapping UniProt IDs to HGNC symbols (optimized) ...')
+
+        hgnc_df = self._get_HGNCset()
+        if getattr(self, '_HGNC_lookup_cache', None) is None:
+            lookup = self._build_hgnc_lookup(hgnc_df)
+            self._HGNC_lookup_cache = lookup
+        else:
+            lookup = self._HGNC_lookup_cache
+
+        uniprot_map = lookup['uniprot']
+
         hgnc_node_dict = {}
-        if self.verbose:
-            report_mod.add_log('Mapping uniprot IDs to HGNC symbols ...')
+        per_node_times = []
         for key, values_list in node_dict.items():
+            n0 = time.perf_counter()
             mapped_values = []
-
             for value in values_list:
-                # Look for the UniProt ID in the uniprot_ids column
-                matching_rows = HGNC_set[HGNC_set['uniprot_ids'].notna() & 
-                                        HGNC_set['uniprot_ids'].str.contains(value, na=False)]
-
-                if not matching_rows.empty:
-                    for _, row in matching_rows.iterrows():
-                        mapped_symbols = [row['symbol']]
-                        mapped_values.extend(mapped_symbols)
-
+                k = normalize_symbol(value)
+                if not k:
+                    continue
+                if k in uniprot_map:
+                    mapped_values.append(uniprot_map[k])
             hgnc_node_dict[key] = mapped_values
+            per_node_times.append(time.perf_counter() - n0)
 
+        t1 = time.perf_counter()
+        total_time = t1 - t0
+
+        # Record timing on instance
+        self._last_node_timing = {
+            'total': total_time,
+            'per_node': {
+                'mean': statistics.mean(per_node_times) if per_node_times else 0.0,
+                'max': max(per_node_times) if per_node_times else 0.0,
+            }
+        }
         if self.verbose:
-            report_mod.add_log('Uniprot IDs mapped to HGNC symbols successfully')
-            report_mod.add_log('Getting missing nodes ...')
-        # Complete values for missing nodes
-        hgnc_node_dict = self._get_missing_nodes(hgnc_node_dict, node_dict)
+            report_mod.add_log(f"UniProt mapping completed (total={total_time:.3f}s)")
+            if per_node_times:
+                report_mod.add_log(f"  per-node mapping: mean={self._last_node_timing['per_node']['mean']:.5f}s max={self._last_node_timing['per_node']['max']:.5f}s")
 
+        hgnc_node_dict = self._get_missing_nodes(hgnc_node_dict, node_dict)
         return hgnc_node_dict
+
+    def _build_hgnc_lookup(self, hgnc_df: pandas.DataFrame) -> dict:
+        """Build normalized lookup dicts from HGNC dataframe.
+
+        Returns a dict with keys: approved, alias, prev, uniprot, meta
+        - approved: normalized approved symbol -> approved symbol
+        - alias: normalized alias -> approved symbol
+        - prev: normalized previous symbol -> approved symbol
+        - uniprot: normalized uniprot id -> approved symbol
+        - meta: normalized approved symbol -> {'alias':[...], 'prev':[...]} for optional expansion
+        """
+        approved = {}
+        alias = {}
+        prev = {}
+        uniprot = {}
+        meta = {}
+
+        for _, row in hgnc_df.iterrows():
+            sym = row.get('symbol')
+            if pandas.isna(sym):
+                continue
+            ap_norm = normalize_symbol(sym)
+            approved[ap_norm] = sym
+
+            alias_list = []
+            prev_list = []
+            if pandas.notna(row.get('alias_symbol')):
+                alias_list = [a.strip() for a in str(row['alias_symbol']).split(',') if a.strip()]
+                for a in alias_list:
+                    ak = normalize_symbol(a)
+                    if ak:
+                        alias[ak] = sym
+
+            if pandas.notna(row.get('prev_symbol')):
+                prev_list = [p.strip() for p in str(row['prev_symbol']).split(',') if p.strip()]
+                for p in prev_list:
+                    pk = normalize_symbol(p)
+                    if pk:
+                        prev[pk] = sym
+
+            if pandas.notna(row.get('uniprot_ids')):
+                ulist = [u.strip() for u in str(row['uniprot_ids']).split(',') if u.strip()]
+                for u in ulist:
+                    uk = normalize_symbol(u)
+                    if uk:
+                        uniprot[uk] = sym
+
+            meta[ap_norm] = {'alias': [normalize_symbol(x) for x in alias_list if x], 'prev': [normalize_symbol(x) for x in prev_list if x]}
+
+        return {'approved': approved, 'alias': alias, 'prev': prev, 'uniprot': uniprot, 'meta': meta}
 
     #//////////////////////////////////////////////////////////
     def _get_HGNCset(self) -> pandas.DataFrame:
@@ -749,12 +882,16 @@ class Node:
                  verbose=verbose,
                  manual_symbols_file=manual_symbols_file)
 
-        # Return Node instance and mapped dict for convenience
-        node = cls(node_input=node_list,
-                   hgnc_symbols_file=str(hgnc_p),
-                   directory_output=directory_output,
-                   verbose=verbose,
-                   include_alias_prev=include_alias_prev)
+        # Attempt to reuse the last created instance (from from_object) so
+        # timing metadata is available. Fall back to creating a new instance
+        # if not present.
+        node = getattr(cls, '_LAST_INSTANCE', None)
+        if node is None:
+            node = cls(node_input=node_list,
+                       hgnc_symbols_file=str(hgnc_p),
+                       directory_output=directory_output,
+                       verbose=verbose,
+                       include_alias_prev=include_alias_prev)
         return node, mapped
 
     @classmethod
@@ -783,6 +920,11 @@ class Node:
                    include_alias_prev=include_alias_prev)
 
         mapped = node.get_node_dict(manual_symbols_file=manual_symbols_file)
+        # Save last instance for external callers (core/CLI) to inspect timings
+        try:
+            cls._LAST_INSTANCE = node
+        except Exception:
+            pass
         return mapped
 
 

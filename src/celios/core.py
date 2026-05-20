@@ -347,6 +347,8 @@ def get_nodedict(
                 verbose=bool(verbose),
                 manual_symbols_file=manual_symbols_cfg,
             )
+            # Attempt to retrieve the Node instance created during from_object
+            node_instance = getattr(node_mod.Node, '_LAST_INSTANCE', None)
             # If mapping was produced and we have a directory_output and hgnc file,
             # assume Node saved a HGNC node dict file.
             if dirout_cfg and hgnc_file_cfg:
@@ -356,6 +358,17 @@ def get_nodedict(
         if isinstance(mapped, dict):
             node_report['node_count'] = len(mapped)
             node_report['missing_nodes'] = [n for n, syms in mapped.items() if not syms]
+        # Attach timing metadata from Node instance when available
+        try:
+            if 'node_instance' in locals() and node_instance is not None and hasattr(node_instance, '_last_node_timing'):
+                node_report['timing'] = node_instance._last_node_timing
+            else:
+                # check class-level last instance
+                last_inst = getattr(node_mod.Node, '_LAST_INSTANCE', None)
+                if last_inst is not None and hasattr(last_inst, '_last_node_timing'):
+                    node_report['timing'] = last_inst._last_node_timing
+        except Exception:
+            pass
 
         artifacts["node_dict"] = mapped
         artifacts["node_report"] = node_report
@@ -432,7 +445,10 @@ def run_celios(
         else:
             node_dict = node_artifacts
         artifacts["node_dict"] = node_dict
-
+        if verbose:
+            print(f"Loaded node dictionary with {len(node_dict)} entries.")
+            print("STEP 1 completed")
+        
         if stop_after == "node_dict":
             if verbose:
                 print("Stopping after STEP: node_dict")
@@ -455,11 +471,14 @@ def run_celios(
         from .utils.io import load_node_dict_from_csv
         node_dict = load_node_dict_from_csv(str(node_dict_path), verbose=verbose)
         artifacts["node_dict"] = node_dict
-        
+        if verbose:
+            print(f"Loaded node dictionary with {len(node_dict)} entries.")
+            print("STEP 1 completed")
         if stop_after == "node_dict":
             if verbose:
                 print("Stopping after STEP: node_dict")
             return artifacts
+
     else:
         raise ValueError("No node dictionary source found. Either define 'steps.Node' in config or provide 'node_dic' in 'steps.Activity'")
 

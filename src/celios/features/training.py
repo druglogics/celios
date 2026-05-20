@@ -182,6 +182,11 @@ class ActivityMatrix:
             return None
         if self.sidm_list is None:
             self._ensure_sidm()
+        if self.verbose and isinstance(self.alias_to_sidm, dict):
+            ach_aliases = sorted(alias for alias in self.alias_to_sidm if str(alias).upper().startswith("ACH-"))
+            print(f"[STEP 2] alias_to_sidm total size: {len(self.alias_to_sidm)}")
+            print(f"[STEP 2] ACH alias count: {len(ach_aliases)}")
+            print(f"[STEP 2] first 20 ACH aliases: {ach_aliases[:20]}")
         df, metadata = load_binary_matrix(
             filepath,
             format_override=format_override,

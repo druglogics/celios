@@ -16,6 +16,7 @@ from celios.features.binary_parser import (
     ModelIDBinaryMatrixParser,
     get_binary_parser,
 )
+from celios.features.binary_builder import load_binary_matrix
 
 
 # ============================================================================
@@ -49,6 +50,30 @@ class TestFormatDetector:
 
         detected = FormatDetector.detect(str(CCLE_MUTS_FILE))
         assert detected == "old", f"Expected 'old', got {detected}"
+
+    def test_detect_old_format_symbol_header(self, tmp_path):
+        """Detect OLD binary format from a symbol-based header."""
+        binary_file = tmp_path / "old_binary.csv"
+        binary_file.write_text(
+            "symbol,SIDM00001,SIDM00002\n"
+            "TP53,1,0\n",
+            encoding="utf-8",
+        )
+
+        detected = FormatDetector.detect(str(binary_file))
+        assert detected == "old"
+
+    def test_detect_modelid_format(self, tmp_path):
+        """Detect 26Q1 format from a ModelID-based header."""
+        binary_file = tmp_path / "modelid_binary.csv"
+        binary_file.write_text(
+            "ModelID,A1BG,A1CF\n"
+            "ACH-000001,1,0\n",
+            encoding="utf-8",
+        )
+
+        detected = FormatDetector.detect(str(binary_file))
+        assert detected == "26q1"
 
     def test_format_override_valid(self, data_files_exist):
         """Verify format override for valid formats."""
@@ -249,6 +274,44 @@ class TestIntegration:
 
         assert metadata["format"] == "old"
         assert df.shape[0] > 0
+
+    def test_load_binary_matrix_modelid_rows_local_sidm_filter(self, tmp_path, monkeypatch):
+        """Load a row-oriented 26Q1 matrix, map ACH rows to SIDM locally, and filter to sidm_list."""
+        binary_file = tmp_path / "modelid_binary.csv"
+        binary_file.write_text(
+            "ModelID,GENE_A,GENE_B\n"
+            "ACH-000001,1,0\n"
+            "ACH-000002,0,1\n"
+            "ACH-000003,1,1\n",
+            encoding="utf-8",
+        )
+
+        alias_map = {
+            "ACH-000001": "SIDM00001",
+            "ACH-000003": "SIDM00003",
+        }
+        sidm_list = ["SIDM00003", "SIDM00001"]
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("ModelID API resolution should not be called for load_binary_matrix")
+
+        monkeypatch.setattr("celios.features.binary_parser.load_sidm_from_modelid", fail_if_called)
+
+        df, metadata = load_binary_matrix(
+            str(binary_file),
+            format_override="26q1",
+            alias_map=alias_map,
+            sidm_list=sidm_list,
+            verbose=False,
+        )
+
+        assert df.index.name == "gene_symbol"
+        assert list(df.columns) == sidm_list
+        assert metadata["sample_axis"] == "rows"
+        assert metadata["selected_sample_ids"] == sidm_list
+        assert metadata["output_shape"] == (2, 2)
+        assert df.loc["GENE_A", "SIDM00001"] == 1
+        assert df.loc["GENE_B", "SIDM00003"] == 1
 
 
 # ============================================================================

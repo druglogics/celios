@@ -103,6 +103,24 @@ def activitymatrix_report(directory: str, data: Dict[str, Any], verbose: bool = 
             report_lines.append(f"Used SIF parser: {node_report.get('used_sif_parser')}")
             if node_report.get('saved_path'):
                 report_lines.append(f"Saved node dict: {node_report.get('saved_path')}")
+            
+            # Include timing summary if available
+            if node_report and node_report.get('timing'):
+                timing = node_report.get('timing')
+                report_lines.append("")
+                report_lines.append("NODE STEP TIMING SUMMARY")
+                report_lines.append("")
+                if timing.get('total') is not None:
+                    report_lines.append(f"Total node step time (s): {timing.get('total'):.3f}")
+                if timing.get('hgnc_load_time') is not None:
+                    report_lines.append(f"HGNC load time (s): {timing.get('hgnc_load_time'):.3f}")
+                if timing.get('lookup_build_time') is not None:
+                    report_lines.append(f"Lookup build time (s): {timing.get('lookup_build_time'):.3f}")
+                per = timing.get('per_node', {})
+                if per:
+                    report_lines.append(f"Per-node mapping (s): mean={per.get('mean',0):.4f} median={per.get('median',0):.4f} max={per.get('max',0):.4f}")
+                if timing.get('alias_expansion_time') is not None:
+                    report_lines.append(f"Alias/prev expansion time (s): {timing.get('alias_expansion_time'):.4f}")
             report_lines.append("")
         
         report_lines.append("")
