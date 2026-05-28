@@ -19,6 +19,7 @@ def _normalize_binary_samples_locally(
     collapse_method: str = "max",
     sample_axis: str = "columns",
     verbose: bool = False,
+    deep_debug: bool = False,
 ) -> Tuple[pd.DataFrame, List[str], List[str]]:
     """Keep only user-relevant samples and rename them to SIDM locally."""
     if genes_df is None or genes_df.empty:
@@ -91,13 +92,10 @@ def _normalize_binary_samples_locally(
         selected = pd.DataFrame(new_columns).T
         matched = list(selected.index)
 
-    if verbose:
-        print(f"[MAPPING] Selected SIDM columns: {len(matched)}")
-        if sample_axis == "rows":
-            matched_model_ids = [str(label) for labels in mapped_sources.values() for label in labels]
-            print(f"[MAPPING] first 10 mutation ModelIDs matched: {matched_model_ids[:10]}")
+    if verbose and deep_debug:
+        print(f"[MAPPING] Selected SIDM columns: {len(matched)} / {len(sidm_list or [])})")
         if unmapped:
-            print(f"[MAPPING] Unmapped binary sample IDs: {unmapped[:10]}")
+            print(f"[MAPPING] Unmapped: {len(unmapped)} sample IDs (first 5): {unmapped[:5]}")
 
     return selected, unmapped, matched
 
@@ -110,6 +108,7 @@ def load_binary_matrix(
     sidm_list: Optional[list] = None,
     collapse_method: str = "max",
     verbose: bool = False,
+    deep_debug: bool = False,
 ) -> Tuple[pd.DataFrame, Dict]:
     """Load a binary matrix file and normalize sample IDs to SIDM.
 
@@ -128,26 +127,9 @@ def load_binary_matrix(
     sample_axis = (metadata or {}).get("sample_axis", "columns")
     raw_sample_ids = (metadata or {}).get("raw_sample_ids")
     input_shape = (metadata or {}).get("input_shape", genes_df.shape)
-
-    if verbose:
-        alias_map = alias_map or {}
-        ach_aliases = sorted(alias for alias in alias_map if str(alias).upper().startswith("ACH-"))
-        mutation_sample_ids = [str(sample_id).strip() for sample_id in (raw_sample_ids or [])]
-        alias_key_set = {str(alias).strip() for alias in alias_map.keys()}
-        intersection = sorted(set(mutation_sample_ids) & alias_key_set)
-        print(f"[BINARY] alias_map total size: {len(alias_map)}")
-        print(f"[BINARY] ACH alias count: {len(ach_aliases)}")
-        print(f"[BINARY] first 20 ACH aliases: {ach_aliases[:20]}")
-        print(f"[BINARY] first 20 sample IDs from mutation file: {mutation_sample_ids[:20]}")
-        print(f"[BINARY] mutation sample ID / alias_map key intersection: {intersection[:20]}")
-
-    if verbose:
-        print(f"[BINARY] detected binary format: {fmt}")
-        print(f"[BINARY] input shape: {input_shape}")
-        print(f"[BINARY] detected sample axis: {sample_axis}")
-        if raw_sample_ids is None:
-            raw_sample_ids = list(genes_df.columns if sample_axis == "columns" else genes_df.index)
-        print(f"[BINARY] first 10 sample IDs: {list(raw_sample_ids)[:10]}")
+    
+    # Initialize matched_sample_ids before use
+    matched_sample_ids = []
 
     genes_df, unmapped, matched_sample_ids = _normalize_binary_samples_locally(
         genes_df,
@@ -156,7 +138,13 @@ def load_binary_matrix(
         collapse_method=collapse_method,
         sample_axis=sample_axis,
         verbose=verbose,
+        deep_debug=deep_debug,
     )
+
+    if verbose and deep_debug:
+        print(f"[BINARY] Format: {fmt}, Input shape: {input_shape}")
+        print(f"[BINARY] Detected sample axis: {sample_axis}")
+        print(f"[BINARY] Loaded samples: {len(raw_sample_ids or [])}, Matched SIDMs: {len(matched_sample_ids)}")
 
     if sample_axis == "rows":
         genes_df = genes_df.T
@@ -173,9 +161,8 @@ def load_binary_matrix(
         metadata["output_shape"] = tuple(genes_df.shape)
         metadata["sample_axis"] = sample_axis
 
-    if verbose:
-        print(f"[BINARY] matched sample IDs: {matched_sample_ids[:10]}")
-        print(f"[BINARY] output shape after SIDM filtering: {genes_df.shape}")
+    if verbose and deep_debug:
+        print(f"[BINARY] Output shape: {genes_df.shape} ({len(matched_sample_ids)} SIDMs, {genes_df.shape[0]} genes)")
 
     return genes_df, metadata
 

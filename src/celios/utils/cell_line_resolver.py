@@ -18,6 +18,9 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 import json
 from typing import Any, Dict, List, Optional, Tuple
+import hashlib
+import os
+from pathlib import Path
 
 import pandas as pd
 
@@ -563,36 +566,83 @@ class SangerApiResolver:
         http_client: Optional[JsonHttpClient] = None,
         base_urls: Optional[List[str]] = None,
         timeout: int = 10,
+        deep_debug: bool = False,
     ):
         self.http = http_client or JsonHttpClient()
         self.base_urls = tuple(base_urls or self.DEFAULT_BASE_URLS)
         self.timeout = timeout
+        self.deep_debug = deep_debug
 
     def _candidate_requests(self, normalized: str, identifier_type: str):
+        """Generate candidate requests in priority order.
+        
+        For CVCL/RRID: high-confidence endpoints first to reduce API calls.
+        - First try: /models?q=<CVCL>&include=identifiers (best match)
+        - Then: Detail lookups by direct path
+        - Finally: Fallback search endpoints
+        """
         requests = []
         include_param = {"include": "identifiers"} if identifier_type in {"cvcl", "rrid"} else None
-        detail_paths = [
-            f"/models/{normalized}",
-            f"/model/{normalized}",
-            f"/passports/{normalized}",
-            f"/cell-lines/{normalized}",
-            f"/cell_lines/{normalized}",
-        ]
+        
         search_candidates = [normalized]
         if identifier_type == "rrid":
             cvcl = extract_cvcl(normalized)
             if cvcl:
                 search_candidates.append(cvcl)
 
-        for base_url in self.base_urls:
-            for path in detail_paths:
-                requests.append((f"{base_url}{path}", include_param))
-            for token in search_candidates:
-                requests.append((f"{base_url}/search", {"q": token, **({"include": "identifiers"} if include_param else {})}))
-                requests.append((f"{base_url}/models", {"search": token, **({"include": "identifiers"} if include_param else {})}))
-                requests.append((f"{base_url}/models", {"q": token, **({"include": "identifiers"} if include_param else {})}))
-                requests.append((f"{base_url}/passports", {"search": token, **({"include": "identifiers"} if include_param else {})}))
-                requests.append((f"{base_url}/model_list", {"search": token, **({"include": "identifiers"} if include_param else {})}))
+        # For CVCL/RRID: try high-confidence endpoints first
+        if identifier_type in {"cvcl", "rrid"}:
+            for base_url in self.base_urls:
+                # High priority: /models?q=<CVCL>&include=identifiers
+                for token in search_candidates:
+                    requests.append((f"{base_url}/models", {"q": token, "include": "identifiers"}))
+            
+            # Medium priority: Direct path lookups
+            detail_paths = [
+                f"/models/{normalized}",
+                f"/model/{normalized}",
+            ]
+            for base_url in self.base_urls:
+                for path in detail_paths:
+                    requests.append((f"{base_url}{path}", include_param))
+            
+            # Lower priority: Other endpoints
+            for base_url in self.base_urls:
+                for token in search_candidates:
+                    requests.append((f"{base_url}/search", {"q": token, "include": "identifiers"}))
+                    requests.append((f"{base_url}/models", {"search": token, "include": "identifiers"}))
+                    requests.append((f"{base_url}/passports", {"search": token, "include": "identifiers"}))
+            
+            # Fallback: Less likely to match
+            fallback_paths = [
+                f"/passports/{normalized}",
+                f"/cell-lines/{normalized}",
+                f"/cell_lines/{normalized}",
+            ]
+            for base_url in self.base_urls:
+                for path in fallback_paths:
+                    requests.append((f"{base_url}{path}", include_param))
+                for token in search_candidates:
+                    requests.append((f"{base_url}/model_list", {"search": token, "include": "identifiers"}))
+        else:
+            # For other identifier types: use original order (no optimization)
+            detail_paths = [
+                f"/models/{normalized}",
+                f"/model/{normalized}",
+                f"/passports/{normalized}",
+                f"/cell-lines/{normalized}",
+                f"/cell_lines/{normalized}",
+            ]
+            for base_url in self.base_urls:
+                for path in detail_paths:
+                    requests.append((f"{base_url}{path}", None))
+                for token in search_candidates:
+                    requests.append((f"{base_url}/search", {"q": token}))
+                    requests.append((f"{base_url}/models", {"search": token}))
+                    requests.append((f"{base_url}/models", {"q": token}))
+                    requests.append((f"{base_url}/passports", {"search": token}))
+                    requests.append((f"{base_url}/model_list", {"search": token}))
+        
         return requests
 
     def resolve_one(self, identifier: object) -> CellLineResolutionResult:
@@ -656,21 +706,22 @@ class SangerApiResolver:
                             ]
                             model_sidms = _extract_sidms_from_record(record)
                             model_sidm = model_sidms[0] if model_sidms else None
-                            print(f"[SIDM][debug][exact_model] model_sidm={model_sidm}")
-                            print(f"[SIDM][debug][exact_model] model_record_type={record.get('type')} model_record_id={record.get('id')}")
-                            print(f"[SIDM][debug][exact_model] linked_identifier_records={linked_identifier_records}")
-                            for linked_record in linked_identifier_records:
-                                identifier_value = _record_identifier_value(linked_record)
-                                identifier_type_name = linked_record.get("type")
-                                identifier_name = None
-                                attributes = linked_record.get("attributes")
-                                if isinstance(attributes, dict):
-                                    identifier_name = attributes.get("name") or attributes.get("label") or attributes.get("identifier")
-                                if identifier_name is None:
-                                    identifier_name = linked_record.get("name")
-                                print(
-                                    f"[SIDM][debug][exact_model] linked_identifier type={identifier_type_name} name={identifier_name} value={identifier_value}"
-                                )
+                            if self.deep_debug:
+                                print(f"[SIDM][debug][exact_model] model_sidm={model_sidm}")
+                                print(f"[SIDM][debug][exact_model] model_record_type={record.get('type')} model_record_id={record.get('id')}")
+                                print(f"[SIDM][debug][exact_model] linked_identifier_records={linked_identifier_records}")
+                                for linked_record in linked_identifier_records:
+                                    identifier_value = _record_identifier_value(linked_record)
+                                    identifier_type_name = linked_record.get("type")
+                                    identifier_name = None
+                                    attributes = linked_record.get("attributes")
+                                    if isinstance(attributes, dict):
+                                        identifier_name = attributes.get("name") or attributes.get("label") or attributes.get("identifier")
+                                    if identifier_name is None:
+                                        identifier_name = linked_record.get("name")
+                                    print(
+                                        f"[SIDM][debug][exact_model] linked_identifier type={identifier_type_name} name={identifier_name} value={identifier_value}"
+                                    )
                             printed_first_exact_model = True
 
             matched_records = _dedupe_records(matched_records)
@@ -930,6 +981,81 @@ class CellosaurusApiResolver:
         return candidates
 
 
+class CellLineCache:
+    """Disk cache for resolved cell lines to avoid repeated API calls.
+    
+    Cache key is based on input file path + content hash.
+    Stores: sidm_list, alias_to_sidm, resolution_report, cache_stats.
+    """
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        """Initialize cache manager.
+        
+        Args:
+            cache_dir: Directory for cache files. If None, uses ~/.celios/cache/resolution/
+        """
+        if cache_dir is None:
+            cache_dir = os.path.join(Path.home(), ".celios", "cache", "resolution")
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _hash_input(self, file_path: str, df: pd.DataFrame) -> str:
+        """Generate cache key from file path and content hash."""
+        # Combine file path and dataframe content
+        path_hash = hashlib.md5(file_path.encode()).hexdigest()
+        # Hash rows (without full content, just shape + first/last row)
+        df_key = f"{df.shape}:{df.iloc[0].to_string() if len(df) > 0 else 'empty'}"
+        df_hash = hashlib.md5(df_key.encode()).hexdigest()
+        return f"{path_hash}_{df_hash}"
+
+    def get(self, file_path: str, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        """Load cache if exists and valid.
+        
+        Returns:
+            Dict with keys: sidm_list, alias_to_sidm, resolution_report, cache_stats
+            None if cache miss or error.
+        """
+        cache_key = self._hash_input(file_path, df)
+        cache_file = self.cache_dir / f"{cache_key}.json"
+        
+        if not cache_file.exists():
+            return None
+        
+        try:
+            with open(cache_file, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def put(self, file_path: str, df: pd.DataFrame, data: Dict[str, Any]) -> bool:
+        """Save resolved cell lines to cache.
+        
+        Args:
+            file_path: Path to input file
+            df: Input dataframe
+            data: Dict with keys: sidm_list, alias_to_sidm, resolution_report, cache_stats
+        
+        Returns:
+            True if saved successfully, False otherwise.
+        """
+        cache_key = self._hash_input(file_path, df)
+        cache_file = self.cache_dir / f"{cache_key}.json"
+        
+        try:
+            # Ensure data is JSON serializable
+            clean_data = {
+                'sidm_list': list(data.get('sidm_list', [])),
+                'alias_to_sidm': dict(data.get('alias_to_sidm', {})),
+                'resolution_report': str(data.get('resolution_report', '')),
+                'cache_stats': dict(data.get('cache_stats', {})),
+            }
+            with open(cache_file, 'w') as f:
+                json.dump(clean_data, f, indent=2)
+            return True
+        except Exception:
+            return False
+
+
 class CellLineResolver:
     """Composite resolver: Sanger API primary, Cellosaurus fallback.
     
@@ -945,11 +1071,13 @@ class CellLineResolver:
         cellosaurus_base_url: str = "https://api.cellosaurus.org",
         timeout: int = 10,
         enable_cache: bool = True,
+        deep_debug: bool = False,
     ):
         self.sanger = SangerApiResolver(
             http_client=http_client,
             base_urls=sanger_base_urls,
             timeout=timeout,
+            deep_debug=deep_debug,
         )
         self.cellosaurus = CellosaurusApiResolver(
             http_client=http_client,
@@ -1278,13 +1406,28 @@ def resolve_model_ids_to_sidm(
 
 
 def resolve_sidm_from_dataframe(
-    df: pd.DataFrame, model_registry: Optional[str] = None, verbose: bool = False
+    df: pd.DataFrame, 
+    model_registry: Optional[str] = None, 
+    verbose: bool = False,
+    cell_line_file: Optional[str] = None,
+    enable_cache: bool = True,
+    cache_dir: Optional[str] = None,
+    deep_debug: bool = False,
 ) -> Tuple[Dict[str, str], List[str], Dict[str, int]]:
     """Resolve SIDMs row-wise from a user-provided cell-line table.
 
     Resolution strategy per row:
     1) Try best available identifier column by priority
     2) If unresolved, try display name columns as fallback
+
+    Args:
+        df: Input dataframe with cell line identifiers
+        model_registry: Optional model registry URL
+        verbose: Print resolution details (summary only)
+        cell_line_file: Path to input file (used for cache key generation)
+        enable_cache: Whether to use disk cache
+        cache_dir: Directory for cache files (default: ~/.celios/cache/resolution/)
+        deep_debug: Print per-row details (verbose must also be True)
 
     Returns:
       - sidm_dict: {SIDM -> display_name}
@@ -1297,6 +1440,20 @@ def resolve_sidm_from_dataframe(
           'cache_stats': dict
         }
     """
+    # Check cache first if enabled and input file provided
+    cache = None
+    if enable_cache and cell_line_file:
+        cache = CellLineCache(cache_dir)
+        cached_result = cache.get(cell_line_file, df)
+        if cached_result:
+            if verbose:
+                print(f"[SIDM] Cache hit for {cell_line_file}")
+            sidm_dict = {}
+            for sidm, name in cached_result['alias_to_sidm'].items():
+                if sidm.startswith('SIDM'):
+                    sidm_dict[sidm] = name
+            return sidm_dict, [], cached_result['cache_stats']
+    
     id_columns_priority = [
         "SIDM",
         "sidm",
@@ -1324,6 +1481,12 @@ def resolve_sidm_from_dataframe(
             "Accepted columns include SIDM, ModelID, RRID, CVCL, CCLE_ID, or cell_line_name."
         )
 
+    # Check if SIDM column exists - if so, use directly without API calls (Todo 3)
+    has_sidm_column = any(col for col in id_columns_priority if col in {"SIDM", "sidm"} and col in df.columns)
+    
+    if has_sidm_column and verbose:
+        print("[SIDM] SIDM column detected - using directly without API calls")
+
     resolver = CellLineResolver(use_cellosaurus_fallback=True)
     sidm_dict: Dict[str, str] = {}
     not_found: List[str] = []
@@ -1339,7 +1502,9 @@ def resolve_sidm_from_dataframe(
     resolution_results = []
     cvcl_debug_emitted = False
 
-    def _print_cvcl_record_debug(query_identifier: str, row_index: int) -> None:
+    def _print_cvcl_record_debug(query_identifier: str, row_index: int, deep_debug: bool = False) -> None:
+        if not deep_debug:
+            return
         normalized_query = normalize_identifier(query_identifier)
         identifier_type = detect_identifier_type(normalized_query)
         raw_records: List[Dict[str, Any]] = []
@@ -1382,7 +1547,7 @@ def resolve_sidm_from_dataframe(
                     source="sanger",
                 )
             )
-            if verbose:
+            if verbose and deep_debug:
                 print(
                     f"[SIDM][row={row_idx}] input_cell_line_name='' input_identifier='' "
                     f"detected_type=name raw_hit_count=0 exact_matched_record_count=0 sidm_candidates=[] status=unresolved"
@@ -1398,39 +1563,55 @@ def resolve_sidm_from_dataframe(
                 display_name = str(value).strip()
                 break
 
-        if verbose and not cvcl_debug_emitted and detect_identifier_type(row_identifier) in {"cvcl", "rrid"}:
-            _print_cvcl_record_debug(row_identifier, row_idx)
-            cvcl_debug_emitted = True
-
-        try:
-            result = resolver.resolve_one(row_identifier)
-        except Exception as exc:
-            if verbose:
-                print(f"[SIDM][row={row_idx}] resolution error for '{row_identifier}': {exc}")
+        # If SIDM column exists and current identifier is SIDM, use it directly (Todo 3)
+        normalized_id = normalize_identifier(row_identifier)
+        id_type = detect_identifier_type(normalized_id)
+        
+        if has_sidm_column and id_type == "sidm":
             result = CellLineResolutionResult(
                 input_raw=row_identifier,
-                input_normalized=normalize_identifier(row_identifier),
-                detected_type=detect_identifier_type(row_identifier),
-                status="unresolved",
+                input_normalized=normalized_id,
+                detected_type="sidm",
+                status="resolved",
+                sidm=normalized_id,
+                matched_on="sidm",
                 source="sanger",
             )
+        else:
+            # API resolution for non-SIDM identifiers
+            if verbose and not cvcl_debug_emitted and id_type in {"cvcl", "rrid"}:
+                _print_cvcl_record_debug(row_identifier, row_idx, deep_debug=False)
+                cvcl_debug_emitted = True
 
-        if result.status == "unresolved" and display_name != row_identifier:
             try:
-                fallback_result = resolver.resolve_one(display_name)
+                result = resolver.resolve_one(row_identifier)
             except Exception as exc:
-                if verbose:
-                    print(f"[SIDM][row={row_idx}] display-name fallback failed for '{display_name}': {exc}")
-                fallback_result = None
-            if fallback_result is not None and fallback_result.status != "unresolved":
-                result = fallback_result
+                if verbose and deep_debug:
+                    print(f"[SIDM][row={row_idx}] resolution error for '{row_identifier}': {exc}")
+                result = CellLineResolutionResult(
+                    input_raw=row_identifier,
+                    input_normalized=normalized_id,
+                    detected_type=id_type,
+                    status="unresolved",
+                    source="sanger",
+                )
+
+            if result.status == "unresolved" and display_name != row_identifier:
+                try:
+                    fallback_result = resolver.resolve_one(display_name)
+                except Exception as exc:
+                    if verbose and deep_debug:
+                        print(f"[SIDM][row={row_idx}] display-name fallback failed for '{display_name}': {exc}")
+                    fallback_result = None
+                if fallback_result is not None and fallback_result.status != "unresolved":
+                    result = fallback_result
 
         resolution_results.append(result)
 
         if result.status == "resolved" and result.sidm is not None:
             sidm_dict[result.sidm] = display_name
             resolution_counts['resolved'] += 1
-            if verbose:
+            if verbose and deep_debug:
                 print(
                     f"[SIDM][row={row_idx}] input_cell_line_name='{display_name}' "
                     f"input_identifier='{row_identifier}' detected_type={result.detected_type} "
@@ -1441,7 +1622,7 @@ def resolve_sidm_from_dataframe(
         elif result.status == "ambiguous":
             resolution_counts['ambiguous'] += 1
             not_found.append(row_identifier)
-            if verbose:
+            if verbose and deep_debug:
                 matched_record_keys = [list(record.keys()) for record in (result.matched_records or [])]
                 print(
                     f"[SIDM][row={row_idx}] input_cell_line_name='{display_name}' "
@@ -1455,7 +1636,7 @@ def resolve_sidm_from_dataframe(
         else:
             resolution_counts['unresolved'] += 1
             not_found.append(row_identifier)
-            if verbose:
+            if verbose and deep_debug:
                 print(
                     f"[SIDM][row={row_idx}] input_cell_line_name='{display_name}' "
                     f"input_identifier='{row_identifier}' detected_type={result.detected_type} "
@@ -1469,11 +1650,21 @@ def resolve_sidm_from_dataframe(
     resolution_counts['alias_to_sidm'] = alias_to_sidm
     resolution_counts['detailed_results'] = resolution_results
 
+    # Save to disk cache if enabled
+    if enable_cache and cache and cell_line_file:
+        cache_data = {
+            'sidm_list': list(sidm_dict.keys()),
+            'alias_to_sidm': alias_to_sidm,
+            'resolution_report': str(resolution_counts),
+            'cache_stats': resolution_counts.get('cache_stats', {}),
+        }
+        if cache.put(cell_line_file, df, cache_data):
+            if verbose and deep_debug:
+                print(f"[SIDM] Saved resolution cache for {cell_line_file}")
+
     if verbose:
+        # Simplified Step 2 verbose output (move details behind deep_debug)
         ach_aliases = sorted(alias for alias in alias_to_sidm if normalize_identifier(alias).startswith("ACH-"))
-        sidm_alias_groups: Dict[str, List[str]] = {}
-        for alias, sidm in alias_to_sidm.items():
-            sidm_alias_groups.setdefault(sidm, []).append(alias)
         print("[SIDM] Resolution summary:")
         print(f"  total_rows: {resolution_counts['total_rows']}")
         print(f"  resolved: {resolution_counts['resolved']}")
@@ -1481,15 +1672,104 @@ def resolve_sidm_from_dataframe(
         print(f"  unresolved: {resolution_counts['unresolved']}")
         print(f"  alias_count: {len(alias_to_sidm)}")
         print(f"  ach_alias_count: {len(ach_aliases)}")
-        print(f"  ach_aliases_preview: {ach_aliases[:10]}")
-        for sidm in sorted(sidm_alias_groups):
-            print(f"  aliases_for_{sidm}: {sorted(sidm_alias_groups[sidm])}")
-        print(f"  cache_stats: {resolution_counts['cache_stats']}")
+        
+        if deep_debug:
+            # Detailed diagnostics only with deep_debug=True
+            ach_aliases = sorted(alias for alias in alias_to_sidm if normalize_identifier(alias).startswith("ACH-"))
+            sidm_alias_groups: Dict[str, List[str]] = {}
+            for alias, sidm in alias_to_sidm.items():
+                sidm_alias_groups.setdefault(sidm, []).append(alias)
+            print(f"  ach_aliases_preview: {ach_aliases[:10]}")
+            for sidm in sorted(sidm_alias_groups):
+                print(f"  aliases_for_{sidm}: {sorted(sidm_alias_groups[sidm])}")
+            print(f"  cache_stats: {resolution_counts['cache_stats']}")
 
     return sidm_dict, not_found, resolution_counts
 
 
+def save_identifier_mapping(
+    df: pd.DataFrame,
+    resolution_report: Dict[str, Any],
+    alias_to_sidm: Dict[str, str],
+    output_path: str,
+    verbose: bool = False,
+) -> bool:
+    """Save user-readable identifier mapping to CSV.
+    
+    Args:
+        df: Input dataframe with cell line identifiers
+        resolution_report: Resolution report dict containing detailed_results
+        alias_to_sidm: Map of all aliases to SIDM
+        output_path: Path to save identifiers.csv
+        verbose: Print confirmation message
+    
+    Returns:
+        True if saved successfully, False otherwise
+    """
+    try:
+        detailed_results = resolution_report.get('detailed_results', [])
+        if not detailed_results:
+            return False
+        
+        rows = []
+        
+        for idx, result in enumerate(detailed_results):
+            # Extract identifiers for this SIDM
+            sidm = result.sidm if result else None
+            
+            # Find all aliases for this SIDM
+            all_aliases = []
+            if sidm:
+                for alias, mapped_sidm in alias_to_sidm.items():
+                    if mapped_sidm == sidm:
+                        all_aliases.append(alias)
+            
+            # Extract specific identifier types
+            cvcl = None
+            rrid = None
+            ach = None
+            
+            if result and result.detected_type == "cvcl":
+                cvcl = extract_cvcl(result.input_normalized)
+            elif result and result.detected_type == "rrid":
+                cvcl = extract_cvcl(result.input_normalized)
+                rrid = result.input_normalized
+            elif result and result.detected_type == "model_id":
+                ach = result.input_normalized
+            
+            # Build row
+            row = {
+                'input_cell_line_name': df.iloc[idx].get('cell_line_name') if 'cell_line_name' in df.columns else '',
+                'input_identifier': result.input_raw if result else '',
+                'detected_type': result.detected_type if result else 'unknown',
+                'status': result.status if result else 'unresolved',
+                'SIDM': sidm or '',
+                'matched_on': result.matched_on if result else '',
+                'source': result.source if result else '',
+                'CVCL': cvcl or '',
+                'RRID': rrid or '',
+                'ACH': ach or '',
+                'all_aliases': '; '.join(sorted(all_aliases)) if all_aliases else '',
+            }
+            rows.append(row)
+        
+        # Create dataframe and save
+        mapping_df = pd.DataFrame(rows)
+        mapping_df.to_csv(output_path, index=False)
+        
+        if verbose:
+            print(f"[SIDM] Saved identifier mapping to: {output_path}")
+        
+        return True
+    
+    except Exception as exc:
+        if verbose:
+            print(f"[SIDM] Error saving identifier mapping: {exc}")
+        return False
+
+
 __all__ = [
+    "CellLineCache",
     "CellLineResolutionResult",
     "CellLineResolver",
     "CellosaurusApiResolver",
@@ -1502,4 +1782,5 @@ __all__ = [
     "resolve_identifiers_to_sidm",
     "resolve_model_ids_to_sidm",
     "resolve_sidm_from_dataframe",
+    "save_identifier_mapping",
 ]

@@ -29,6 +29,54 @@ from celios.features.source_selector import select_from_master
 logger = logging.getLogger(__name__)
 
 
+def _compute_source_coverage(source_matrix: pd.DataFrame, sidm_list: List[str], source_name: str, verbose: bool = False, source_error: Optional[str] = None) -> Dict:
+    """Compute coverage statistics for a source matrix.
+    
+    Returns dict with selected, matched, missing SIDMs and matrix shape.
+    If source_error is provided, returns error status instead of coverage.
+    """
+    if source_error:
+        coverage = {
+            'source': source_name,
+            'status': 'error',
+            'error': source_error,
+            'selected': len(sidm_list),
+            'matched': 0,
+            'missing': len(sidm_list),
+            'shape': None,
+        }
+        if verbose:
+            print(f"[COVERAGE] {source_name}: ERROR - {source_error}")
+        return coverage
+    
+    if source_matrix is None or source_matrix.empty:
+        coverage = {
+            'source': source_name,
+            'status': 'no_data',
+            'selected': len(sidm_list),
+            'matched': 0,
+            'missing': len(sidm_list),
+            'shape': (0, 0),
+        }
+    else:
+        matched = [s for s in sidm_list if s in source_matrix.columns]
+        missing = [s for s in sidm_list if s not in source_matrix.columns]
+        coverage = {
+            'source': source_name,
+            'status': 'loaded',
+            'selected': len(sidm_list),
+            'matched': len(matched),
+            'missing': len(missing),
+            'shape': source_matrix.shape,
+            'missing_sidms': missing,
+        }
+    
+    if verbose and coverage.get('missing', 0) > 0 and coverage['status'] != 'error':
+        print(f"[COVERAGE] {source_name}: {coverage['matched']}/{coverage['selected']} SIDMs matched (missing: {coverage['missing']})")
+    
+    return coverage
+
+
 class ActivityMatrix:
     """Lightweight container for pipeline configuration and orchestration.
 
@@ -107,16 +155,51 @@ class ActivityMatrix:
         if self.sidm_list is not None and self.sidm_dict is not None:
             if self.verbose:
                 print(f"[STEP 2] Cell line ID resolution already available: {len(self.sidm_list)} SIDMs")
+            # Still try to save identifiers.csv if we have the data
+            if self.directory_output and hasattr(self, 'resolution_report') and self.resolution_report:
+                try:
+                    from celios.utils.cell_line_resolver import save_identifier_mapping
+                    from celios.utils import load_csv_file
+                    df = load_csv_file(self.cell_line_file)
+                    output_path = os.path.join(self.directory_output, 'identifiers.csv')
+                    os.makedirs(self.directory_output, exist_ok=True)
+                    success = save_identifier_mapping(df, self.resolution_report, self.alias_to_sidm, output_path, verbose=False)
+                    if success:
+                        print(f"[STEP 2] Saved identifier mapping: {output_path}")
+                except Exception:
+                    pass  # Silently ignore errors on cached path
             return self.sidm_list, self.sidm_dict
 
         if not self.cell_line_file:
             raise ValueError("cell_line_file must be provided to extract SIDM list")
 
-        sidm_list, sidm_dict, alias_map, resolution_report = cline_resolve(cell_line_file=self.cell_line_file, verbose=self.verbose)
+        sidm_list, sidm_dict, alias_map, resolution_report = cline_resolve(
+            cell_line_file=self.cell_line_file, 
+            verbose=self.verbose,
+        )
         self.sidm_list = sidm_list
         self.sidm_dict = sidm_dict
         self.alias_to_sidm = alias_map or {}
+        self.resolution_report = resolution_report  # Store for later use
         add_resolution_report(resolution_report)
+        
+        # Simplified Step 2 output (moved save logic to _run_pipeline for safety)
+        if self.verbose:
+            total = resolution_report.get('total_rows', 0) if isinstance(resolution_report, dict) else 0
+            resolved = resolution_report.get('resolved', 0) if isinstance(resolution_report, dict) else 0
+            ambiguous = resolution_report.get('ambiguous', 0) if isinstance(resolution_report, dict) else 0
+            unresolved = resolution_report.get('unresolved', 0) if isinstance(resolution_report, dict) else 0
+            alias_map_data = resolution_report.get('alias_to_sidm', {}) if isinstance(resolution_report, dict) else {}
+            ach_aliases = sum(1 for a in alias_map_data if a.startswith('ACH-') or (isinstance(a, str) and a.startswith('ACH')))
+            
+            print(f"[STEP 2] Cell line resolution complete:")
+            print(f"  total rows: {total}")
+            print(f"  resolved: {resolved}")
+            print(f"  ambiguous: {ambiguous}")
+            print(f"  unresolved: {unresolved}")
+            print(f"  total aliases: {len(alias_map_data)}")
+            print(f"  ACH aliases: {ach_aliases}")
+        
         if self.verbose:
             print(f"[STEP 2] Resolved SIDMs: {len(self.sidm_list)}")
         return self.sidm_list, self.sidm_dict
@@ -146,7 +229,12 @@ class ActivityMatrix:
     def _load_activity_raw(self):
         if not self.activity_file:
             raise ValueError("No activity_file provided")
-        df, metadata = load_expression_matrix(self.activity_file, format_override=self.format_override, verbose=self.verbose)
+        df, metadata = load_expression_matrix(
+            self.activity_file, 
+            format_override=self.format_override, 
+            verbose=self.verbose,
+            deep_debug=getattr(self, 'deep_debug', False),
+        )
         self.format_metadata = metadata
         self.activity_raw_df = df
         return self.activity_raw_df
@@ -162,6 +250,7 @@ class ActivityMatrix:
             alias_map=self.alias_to_sidm,
             format_override=self.format_override,
             verbose=self.verbose,
+            deep_debug=getattr(self, 'deep_debug', False),
         )
         if self.activity_raw_df is None:
             self.activity_raw_df = df.copy()
@@ -172,7 +261,11 @@ class ActivityMatrix:
     def _normalize_expression(self):
         if self.activity_df is None:
             self._prepare_activity_df()
-        df = normalize_expression_matrix(self.activity_df, verbose=self.verbose)
+        df = normalize_expression_matrix(
+            self.activity_df, 
+            verbose=self.verbose,
+            deep_debug=getattr(self, 'deep_debug', False),
+        )
         self.activity_normalized = df
         return self.activity_normalized
 
@@ -182,11 +275,6 @@ class ActivityMatrix:
             return None
         if self.sidm_list is None:
             self._ensure_sidm()
-        if self.verbose and isinstance(self.alias_to_sidm, dict):
-            ach_aliases = sorted(alias for alias in self.alias_to_sidm if str(alias).upper().startswith("ACH-"))
-            print(f"[STEP 2] alias_to_sidm total size: {len(self.alias_to_sidm)}")
-            print(f"[STEP 2] ACH alias count: {len(ach_aliases)}")
-            print(f"[STEP 2] first 20 ACH aliases: {ach_aliases[:20]}")
         df, metadata = load_binary_matrix(
             filepath,
             format_override=format_override,
@@ -195,6 +283,7 @@ class ActivityMatrix:
             sidm_list=self.sidm_list,
             collapse_method='max',
             verbose=self.verbose,
+            deep_debug=getattr(self, 'deep_debug', False),
         )
         cols = [c for c in (df.columns if df is not None else []) if c in (self.sidm_list or [])]
         if df is not None and cols:
@@ -259,6 +348,7 @@ class ActivityMatrix:
             source_matrices=source_matrices,
             node_index=list(self.node_dict.keys()),
             include_symbol=True,
+            selected_sources=self.data_sources,
         )
         self.activity_matrix = master
         return master
@@ -294,13 +384,33 @@ class ActivityMatrix:
             self._ensure_sidm()
         except Exception:
             logger.exception('Failed to ensure SIDM mapping')
+        
+        # Save identifier mapping if output directory is available
+        # (Do this in _run_pipeline where directory_output is guaranteed to be set)
+        if self.directory_output and hasattr(self, 'resolution_report') and self.resolution_report:
+            try:
+                from celios.utils.cell_line_resolver import save_identifier_mapping
+                from celios.utils import load_csv_file
+                df = load_csv_file(self.cell_line_file)
+                output_path = os.path.join(self.directory_output, 'identifiers.csv')
+                success = save_identifier_mapping(df, self.resolution_report, self.alias_to_sidm, output_path, verbose=False)
+                if success:
+                    print(f"[STEP 2] Saved identifier mapping: {output_path}")
+            except Exception as exc:
+                if self.verbose:
+                    print(f"[STEP 2] Error saving identifier mapping: {exc}")
+        
         try:
             self._ensure_node_dict()
         except Exception:
             logger.exception('Failed to ensure node dictionary')
 
+        if self.verbose:
+            print("\n[STEP 3] Extracting omics")
+
         # build requested node-level matrices
         node_expr = node_tf = node_muts = node_cnv = None
+        source_errors = {}
 
         if 'expression' in (selected_sources or self.data_sources):
             try:
@@ -309,28 +419,72 @@ class ActivityMatrix:
                 self._normalize_expression()
                 self._reverse_node_dict()
                 node_expr = self._node_expression_matrix()
-            except Exception:
+                if self.verbose:
+                    shape_str = str(node_expr.shape) if node_expr is not None else "(0, 0)"
+                    matched_cnt = len(node_expr.columns) if node_expr is not None else 0
+                    total_cnt = len(self.sidm_list) if self.sidm_list else 0
+                    print(f"[SOURCE] expression")
+                    print(f"  matched SIDMs: {matched_cnt}/{total_cnt}")
+                    print(f"  matrix shape: {shape_str}")
+            except Exception as exc:
+                source_errors['expression'] = str(exc)
                 logger.exception('Error preparing expression data')
+                if self.verbose:
+                    print(f"[SOURCE] expression - ERROR: {exc}")
 
         if 'mutations' in (selected_sources or self.data_sources) and self.mutations_file:
             try:
                 muts = self._load_binary_table(self.mutations_file, format_override=self.mutations_format_override)
                 node_muts = aggregate_genes_to_nodes(muts, node_dict=self.node_dict, agg_method="max")
-            except Exception:
+                if self.verbose:
+                    shape_str = str(node_muts.shape) if node_muts is not None else "(0, 0)"
+                    matched_cnt = len(node_muts.columns) if node_muts is not None else 0
+                    total_cnt = len(self.sidm_list) if self.sidm_list else 0
+                    fmt = getattr(self, 'mutations_format_override', None) or 'auto'
+                    print(f"[SOURCE] mutations")
+                    print(f"  format: {fmt}")
+                    print(f"  matched SIDMs: {matched_cnt}/{total_cnt}")
+                    print(f"  matrix shape: {shape_str}")
+            except Exception as exc:
+                source_errors['mutations'] = str(exc)
                 logger.exception('Error loading mutations')
+                if self.verbose:
+                    print(f"[SOURCE] mutations - ERROR: {exc}")
 
         if 'cnv' in (selected_sources or self.data_sources) and self.cnv_file:
             try:
                 cnv = self._load_binary_table(self.cnv_file, format_override=self.cnv_format_override)
                 node_cnv = aggregate_genes_to_nodes(cnv, node_dict=self.node_dict, agg_method="max")
-            except Exception:
+                if self.verbose:
+                    shape_str = str(node_cnv.shape) if node_cnv is not None else "(0, 0)"
+                    matched_cnt = len(node_cnv.columns) if node_cnv is not None else 0
+                    total_cnt = len(self.sidm_list) if self.sidm_list else 0
+                    fmt = getattr(self, 'cnv_format_override', None) or 'auto'
+                    print(f"[SOURCE] cnv")
+                    print(f"  format: {fmt}")
+                    print(f"  matched SIDMs: {matched_cnt}/{total_cnt}")
+                    print(f"  matrix shape: {shape_str}")
+            except Exception as exc:
+                source_errors['cnv'] = str(exc)
                 logger.exception('Error loading CNV')
+                if self.verbose:
+                    print(f"[SOURCE] cnv - ERROR: {exc}")
 
         if 'TF' in (selected_sources or self.data_sources) and self.tf_activity_file:
             try:
                 node_tf = self._tf_node_matrix()
-            except Exception:
+                if self.verbose:
+                    shape_str = str(node_tf.shape) if node_tf is not None else "(0, 0)"
+                    matched_cnt = len(node_tf.columns) if node_tf is not None else 0
+                    total_cnt = len(self.sidm_list) if self.sidm_list else 0
+                    print(f"[SOURCE] TF")
+                    print(f"  matched SIDMs: {matched_cnt}/{total_cnt}")
+                    print(f"  matrix shape: {shape_str}")
+            except Exception as exc:
+                source_errors['TF'] = str(exc)
                 logger.exception('Error creating TF matrix')
+                if self.verbose:
+                    print(f"[SOURCE] TF - ERROR: {exc}")
 
         source_matrices = {
             'expression': node_expr,
@@ -339,13 +493,28 @@ class ActivityMatrix:
             'cnv': node_cnv,
         }
 
+        # Track coverage for each source
+        coverage_stats = {}
+        for source, matrix in source_matrices.items():
+            if source in (selected_sources or self.data_sources):
+                source_error = source_errors.get(source)
+                coverage = _compute_source_coverage(matrix, self.sidm_list, source, verbose=self.verbose, source_error=source_error)
+                coverage_stats[source] = coverage
+
         master = assemble_master_matrix(
             node_dict=self.node_dict,
             sidm_list=self.sidm_list,
             source_matrices=source_matrices,
             node_index=list(self.node_dict.keys()),
             include_symbol=True,
+            selected_sources=selected_sources or self.data_sources,
         )
+
+        if self.verbose:
+            selected_src_list = selected_sources or self.data_sources
+            print(f"\n[MASTER] Final activity matrix")
+            print(f"  shape: {master.shape}")
+            print(f"  selected sources: {', '.join(selected_src_list)}")
 
         master_fp = None
         if save_master:
@@ -394,6 +563,7 @@ class ActivityMatrix:
                 'final_shape': getattr(final, 'shape', None),
                 'nodes_with_all_missing': [],
                 'format_metadata': self.format_metadata,
+                'coverage_stats': coverage_stats,
             }
             activitymatrix_report(self.directory_output, report_data, verbose=self.verbose)
 

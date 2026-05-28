@@ -18,13 +18,14 @@ def load_expression_matrix(
     activity_file: str,
     format_override: Optional[str] = None,
     verbose: bool = False,
+    deep_debug: bool = False,
 ) -> Tuple[pd.DataFrame, Dict]:
     """Load and parse an expression matrix using the existing parser stack."""
-    if verbose:
+    if verbose and deep_debug:
         print(f"[EXPRESSION] Loading activity file: {activity_file}")
 
     detected_format = FormatDetector.detect(activity_file, format_override=format_override)
-    if verbose:
+    if verbose and deep_debug:
         print(f"[EXPRESSION] Detected format: {detected_format}")
 
     parser = get_parser(detected_format, verbose=verbose)
@@ -32,7 +33,7 @@ def load_expression_matrix(
     metadata = metadata or {}
     metadata["format"] = metadata.get("format", detected_format)
 
-    if verbose:
+    if verbose and deep_debug:
         print(f"[EXPRESSION] Parsed raw matrix shape: {df.shape}")
 
     return df, metadata
@@ -45,6 +46,7 @@ def prepare_expression_matrix(
     alias_map: Optional[Dict[str, str]] = None,
     format_override: Optional[str] = None,
     verbose: bool = False,
+    deep_debug: bool = False,
 ) -> Tuple[pd.DataFrame, Dict]:
     """Load expression data, normalize sample IDs, and retain SIDM columns only."""
     if activity_df is None:
@@ -54,6 +56,7 @@ def prepare_expression_matrix(
             activity_file,
             format_override=format_override,
             verbose=verbose,
+            deep_debug=deep_debug,
         )
     else:
         df = activity_df.copy()
@@ -71,7 +74,7 @@ def prepare_expression_matrix(
         verbose=verbose,
     )
 
-    if unmapped and verbose:
+    if unmapped and verbose and deep_debug:
         print(f"[EXPRESSION] Unmapped sample IDs: {unmapped[:20]}")
 
     if df_norm is not None and not df_norm.empty:
@@ -81,13 +84,13 @@ def prepare_expression_matrix(
         cols = [c for c in sidm_list if c in df.columns]
         df = df.loc[:, cols]
 
-    if verbose:
+    if verbose and deep_debug:
         print(f"[EXPRESSION] Prepared matrix shape: {df.shape}")
 
     return df, metadata
 
 
-def normalize_expression_matrix(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame:
+def normalize_expression_matrix(df: pd.DataFrame, verbose: bool = False, deep_debug: bool = False) -> pd.DataFrame:
     """Apply log transform and row-wise min-max normalization to expression data."""
     if df is None:
         return None
@@ -101,7 +104,7 @@ def normalize_expression_matrix(df: pd.DataFrame, verbose: bool = False) -> pd.D
         axis=1,
     )
 
-    if verbose:
+    if verbose and deep_debug:
         print(f"[EXPRESSION] Normalized matrix shape: {out.shape}")
 
     return out

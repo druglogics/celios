@@ -155,12 +155,32 @@ def activitymatrix_report(directory: str, data: Dict[str, Any], verbose: bool = 
                 report_lines.append(f"{sidm}: {name}")
 
     report_lines.append("")
-    report_lines.append("TRAINING TRAINING DATA")
+    report_lines.append("TRAINING DATA")
     report_lines.append("")
     for key in ['raw_shape', 'prep_shape', 'norm_shape', 'node_expr_shape', 'muts_shape', 'cnv_shape', 'tfm_shape']:
         val = data.get(key)
         if val is not None:
             report_lines.append(f"{key}: {val}")
+
+    coverage_stats = data.get('coverage_stats', {})
+    if coverage_stats:
+        report_lines.append("")
+        report_lines.append("SOURCE COVERAGE")
+        report_lines.append("")
+        for source_name, cov in coverage_stats.items():
+            status = cov.get('status', 'loaded')
+            if status == 'error':
+                error_msg = cov.get('error', 'Unknown error')
+                report_lines.append(f"{source_name}: ERROR - {error_msg}")
+            else:
+                matched = cov.get('matched', 0)
+                selected = cov.get('selected', 0)
+                missing = cov.get('missing', 0)
+                shape = cov.get('shape', (0, 0))
+                report_lines.append(f"{source_name}: {matched}/{selected} SIDMs matched, {shape[0]} nodes, {shape[1]} SIDMs")
+                if missing > 0 and 'missing_sidms' in cov:
+                    missing_list = cov['missing_sidms'][:10]
+                    report_lines.append(f"  Missing SIDMs (first 10): {missing_list}")
 
     master_fp = data.get('master_fp')
     master_shape = data.get('master_shape')

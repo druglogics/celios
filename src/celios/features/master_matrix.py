@@ -58,6 +58,7 @@ def assemble_master_matrix(
     node_index: Optional[Sequence[str]] = None,
     include_symbol: bool = True,
     source_order: Optional[Sequence[str]] = None,
+    selected_sources: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
     """Assemble the master matrix from precomputed node-level source matrices.
 
@@ -68,6 +69,7 @@ def assemble_master_matrix(
         node_index: optional node ordering. Defaults to node_dict keys.
         include_symbol: whether to include a `symbol` column
         source_order: explicit order of sources; defaults to SOURCE_PRIORITY
+        selected_sources: optional list of sources to include; if provided, only these sources are assembled
     """
     if not node_dict:
         raise ValueError("node_dict must be provided to assemble the master matrix")
@@ -77,6 +79,11 @@ def assemble_master_matrix(
     source_matrices = source_matrices or {}
     source_order = tuple(source_order or SOURCE_PRIORITY)
     node_index = list(node_index or node_dict.keys())
+    
+    # If selected_sources is provided, only include those sources
+    if selected_sources is not None:
+        selected_sources = set(selected_sources)
+        source_order = tuple(s for s in source_order if s in selected_sources)
 
     master = pd.DataFrame(index=node_index)
     if include_symbol:

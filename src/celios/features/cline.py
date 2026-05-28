@@ -5,6 +5,7 @@ This module provides a small wrapper around the existing resolver in
 single entrypoint while we incrementally migrate logic.
 """
 from typing import Optional, Tuple, Dict, List
+from pathlib import Path
 
 import pandas as pd
 
@@ -13,6 +14,7 @@ from celios.utils.cell_line_resolver import (
     resolve_sidm_from_dataframe,
     normalize_identifier,
     detect_identifier_type,
+    save_identifier_mapping,
 )
 
 
@@ -46,8 +48,17 @@ def detect_id_type(value: object) -> str:
     return detect_identifier_type(value)
 
 
-def resolve_cell_lines(cell_line_file: Optional[str] = None, df: Optional[pd.DataFrame] = None, verbose: bool = False) -> Tuple[List[str], Dict[str, str], Dict[str, str], Dict[str, int]]:
+def resolve_cell_lines(
+    cell_line_file: Optional[str] = None, 
+    df: Optional[pd.DataFrame] = None, 
+    verbose: bool = False,
+) -> Tuple[List[str], Dict[str, str], Dict[str, str], Dict[str, int]]:
     """Resolve SIDMs from a user-provided cell-line file or DataFrame.
+
+    Args:
+        cell_line_file: Path to cell line file
+        df: Optional DataFrame (if not provided, loaded from cell_line_file)
+        verbose: Print resolution details
 
     Returns: (sidm_list, sidm_dict, alias_to_sidm, resolution_report)
     """
@@ -61,16 +72,8 @@ def resolve_cell_lines(cell_line_file: Optional[str] = None, df: Optional[pd.Dat
     # Pre-normalize identifier-like columns where helpful (light touch)
     # Keep heavy lifting to resolve_sidm_from_dataframe
     sidm_dict, not_found, resolution_report = resolve_sidm_from_dataframe(df, verbose=verbose)
-    if verbose:
-        total = resolution_report.get('total_rows') if isinstance(resolution_report, dict) else None
-        resolved = resolution_report.get('resolved') if isinstance(resolution_report, dict) else None
-        unresolved = resolution_report.get('unresolved') if isinstance(resolution_report, dict) else None
-        alias_map = resolution_report.get('alias_to_sidm') if isinstance(resolution_report, dict) else None
-        cache_stats = resolution_report.get('cache_stats') if isinstance(resolution_report, dict) else None
-        print(f"[SIDM] Resolution summary: total={total}, resolved={resolved}, unresolved={unresolved}")
-        print(f"[SIDM] Alias map size: {len(alias_map) if alias_map else 0}")
-        if cache_stats is not None:
-            print(f"[SIDM] Cache stats: {cache_stats}")
+    
     alias_map = resolution_report.get("alias_to_sidm", {}) if isinstance(resolution_report, dict) else {}
     sidm_list = list(sidm_dict.keys())
+    
     return sidm_list, sidm_dict, alias_map, resolution_report
