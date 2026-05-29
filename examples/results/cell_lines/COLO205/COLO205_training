@@ -1,0 +1,13 @@
+# COLO-205
+Condition
+-
+Response
+IRS2:1.0	JUN:1.0	MYC:1.0	STAT3:1.0	
+Weight:1
+
+# Proliferation state
+Condition
+-
+Response
+globaloutput:1
+Weight:1

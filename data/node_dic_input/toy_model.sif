@@ -1,0 +1,16 @@
+mTOR_c2	activate	AKT1
+MAP3K1	activate	MAP2K4
+MAP3K1	activate	MEK_f
+MAP2K4	activate	MAPK8
+MAPK8	activate	MYC
+MAPK8	activate	JUN
+MAPK8	activate	STAT3
+LRP5	inhibit	GSK3B
+IRS2	activate	mTOR_c2
+IRS2	activate	PIK3CA
+ERK_f	activate	mTOR_c1
+ERK_f	activate	STAT3
+ERK_f	inhibit	FOXO3
+MEK_f	activate	ERK_f
+CyclinB_CDK1	activate	Proliferation
+CCND1	activate	CyclinD_CDK4_6

@@ -259,12 +259,16 @@ class Format26Q1Parser(ActivityParser):
         df_genes = df_genes.T
 
         # Set sample identifiers as column names
-        if "SequencingID" in df.columns:
+        # Use ModelID (the actual sample identifier) for downstream alias-to-SIDM mapping
+        # Fall back to SequencingID if ModelID is missing
+        if "ModelID" in df.columns:
+            df_genes.columns = df["ModelID"].values
+        elif "SequencingID" in df.columns:
             df_genes.columns = df["SequencingID"].values
         else:
             df_genes.columns = df.index
 
-        df_genes.index = pd.Index(gene_symbols, name="model_id")
+        df_genes.index = pd.Index(gene_symbols, name="symbol")
 
         metadata["n_genes"] = df_genes.shape[0]
         metadata["n_samples"] = df_genes.shape[1]

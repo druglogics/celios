@@ -113,9 +113,9 @@ class TestFormat26Q1Parser:
         assert isinstance(metadata, dict), "Parser should return metadata dict"
         
         # Check DataFrame properties
-        assert df.index.name == "model_id", "Index should be named 'model_id' (sample identifiers)"
+        assert df.index.name == "symbol", "Index should be named 'symbol' (gene symbols)"
         assert len(df) > 0, "DataFrame should have rows (genes)"
-        assert len(df.columns) > 0, "DataFrame should have columns (samples)"
+        assert len(df.columns) > 0, "DataFrame should have columns (samples/ModelIDs)"
         
         # Check metadata
         assert metadata["format"] == "26Q1"
@@ -140,6 +140,44 @@ class TestFormat26Q1Parser:
         
         # Check that symbols are uppercase
         assert all(s == s.upper() for s in df.index), "Gene symbols should be normalized to uppercase"
+
+    def test_parse_26q1_synthetic_modelid_mapping(self):
+        """Test 26Q1 parsing with synthetic data: ModelID should be used as column names."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a synthetic 26Q1 CSV with ModelID and SequencingID
+            synthetic_file = os.path.join(tmpdir, "synthetic_26q1.csv")
+            
+            # Create synthetic data
+            synthetic_data = """SequencingID,ModelConditionID,ModelID,IsDefaultEntryForMC,IsDefaultEntryForModel,BRCA1 (672),TP53 (7157),MYC (4609)
+SQ00000001,MCC0001,ACH-000111,true,true,10.5,5.2,3.1
+SQ00000002,MCC0002,ACH-000222,true,true,8.2,4.9,2.8
+SQ00000003,MCC0003,ACH-000333,true,true,9.1,6.3,3.5"""
+            
+            with open(synthetic_file, 'w') as f:
+                f.write(synthetic_data)
+            
+            # Parse with Format26Q1Parser
+            parser = Format26Q1Parser()
+            df, metadata = parser.load(synthetic_file)
+            
+            # Verify output
+            assert df.shape == (3, 3), f"Expected shape (3, 3), got {df.shape}"
+            assert df.index.name == "symbol", "Index should be named 'symbol'"
+            assert list(df.index) == ["BRCA1", "TP53", "MYC"], "Gene symbols should be extracted"
+            
+            # CRITICAL: Columns should be ModelID values, NOT SequencingID
+            expected_modelids = ["ACH-000111", "ACH-000222", "ACH-000333"]
+            assert list(df.columns) == expected_modelids, \
+                f"Columns should be ModelID values {expected_modelids}, got {list(df.columns)}"
+            
+            # Verify metadata has model_ids
+            assert "model_ids" in metadata, "Metadata should contain model_ids"
+            assert set(metadata["model_ids"]) == set(expected_modelids), \
+                f"Metadata model_ids should contain {expected_modelids}"
+            
+            # Verify numeric values
+            assert df.loc["BRCA1", "ACH-000111"] == 10.5, "Expression values should be parsed correctly"
+            assert df.loc["TP53", "ACH-000222"] == 4.9, "Expression values should be parsed correctly"
 
 
 class TestGetParser:
@@ -215,6 +253,54 @@ class TestIntegration:
         assert isinstance(metadata, dict)
         assert metadata["format"] == "26Q1"
         assert df.shape[0] > 0 and df.shape[1] > 0
+        
+        # Verify that columns are ModelID values (for downstream SIDM mapping)
+        # This is critical: columns should be compatible with alias_map lookup
+        assert "model_ids" in metadata, "Metadata should contain model_ids"
+        assert len(metadata["model_ids"]) == df.shape[1], "model_ids count should match column count"
+
+    def test_26q1_expression_builder_integration(self):
+        """Test that 26Q1 parser output integrates with expression_builder for SIDM mapping."""
+        from celios.features.expression_builder import prepare_expression_matrix
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a synthetic 26Q1 CSV
+            synthetic_file = os.path.join(tmpdir, "synthetic_26q1.csv")
+            
+            synthetic_data = """SequencingID,ModelConditionID,ModelID,IsDefaultEntryForMC,IsDefaultEntryForModel,BRCA1 (672),TP53 (7157)
+SQ00000001,MCC0001,ACH-000111,true,true,10.5,5.2
+SQ00000002,MCC0002,ACH-000222,true,true,8.2,4.9"""
+            
+            with open(synthetic_file, 'w') as f:
+                f.write(synthetic_data)
+            
+            # Create alias_map: ModelID → SIDM
+            alias_map = {
+                "ACH-000111": "SIDM00001",
+                "ACH-000222": "SIDM00002",
+            }
+            sidm_list = ["SIDM00001", "SIDM00002"]
+            
+            # Prepare expression matrix with SIDM mapping
+            df, metadata = prepare_expression_matrix(
+                activity_file=synthetic_file,
+                format_override="26Q1",
+                alias_map=alias_map,
+                sidm_list=sidm_list,
+                verbose=True,
+                deep_debug=False,
+            )
+            
+            # Verify output
+            assert df.shape[0] == 2, f"Expected 2 genes, got {df.shape[0]}"
+            assert df.shape[1] == 2, f"Expected 2 SIDMs, got {df.shape[1]}"
+            assert df.index.name == "symbol", "Index should be 'symbol'"
+            
+            # Verify columns are now SIDM (not SequencingID or ModelID)
+            expected_sidms = {"SIDM00001", "SIDM00002"}
+            actual_sidms = set(df.columns)
+            assert actual_sidms == expected_sidms, \
+                f"Expected columns to be {expected_sidms}, got {actual_sidms}"
 
 
 if __name__ == "__main__":

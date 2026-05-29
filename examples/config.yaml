@@ -1,0 +1,61 @@
+# CELIOS Example Configuration
+# This configuration uses toy data to demonstrate the CELIOS pipeline.
+# 
+# Paths can be absolute or relative. When running from the examples/ directory,
+# use "../data/" to reference the shared data folder.
+
+
+# Paths: base is where you run CELIOS from, input/output are relative to base
+paths:
+  # Base directory context (typically the project root or where you run from)
+  base: "."
+  # Input data directory containing omics and node dictionary files
+  input: "../data/omics_input"
+  # Output directory where CELIOS results will be saved
+  output: "results"
+  # Directory where individual cell line results will be stored
+  cellfiles_dir: "results/cell_lines"
+
+# Two-step pipeline: Node extraction and Activity calculation
+steps:
+  # STEP 1: Node Dictionary Extraction
+  # Builds a dictionary mapping gene symbols to network node identifiers
+  # Input: a SIF network file and HGNC gene symbol reference
+  Node:
+    # Network file (SIF format: tab-separated interaction triplets)
+    node_input: "../data/node_dic_input/toy_model.sif"
+    # HGNC gene symbol reference file (for standardizing gene names)
+    hgnc_symbols_file: "../data/node_dic_input/hgnc_complete_set.txt"
+    # Manual gene symbol mappings for genes not in HGNC (optional)
+    manual_symbols_file: "../data/node_dic_input/manual_symbols.csv"
+    # Whether to include HGNC alias and previous symbols
+    include_alias_previous_symbols: false
+    # Output directory for node dictionary artifacts
+    directory_output: "results"
+
+  # STEP 2: Activity Calculation
+  # Extracts and processes omics data, maps genes to network nodes
+  Activity:
+    # Cell line list (CSV with identifiers to analyze)
+    cell_line_file: "toy_cells_list.csv"
+    # Gene expression data (TPM or log2 format, genes x samples)
+    activity_file: "rnaseq_tpm_coding_genes26Q1.csv"
+    # Binary mutation matrix (genes x samples, 0=WT, 1=mutated)
+    mutations_file: "26Q1_mutations.csv"
+    # Copy number variation matrix (genes x samples, 0=loss, 1=neutral, 2=gain)
+    cnv_file: "CCLE_CNV_binary.csv"
+    # Optional: Transcription factor activity scores
+    tf_activity_file: "ccle_tf_activities.csv"
+    
+    # Omics data sources to integrate (choose which to include)
+    # Options: "mutations", "cnv", "TF", "expression"
+    data_sources: ["mutations", "cnv", "TF", "expression"]
+    
+    # Output directory for activity-related artifacts
+    directory_output: "results"
+
+# Notes
+# - Relative paths (not starting with /) are relative to `paths.base`
+# - Make sure all input files exist and are readable
+# - The output directory will be created if it doesn't exist
+# - Run from the examples/ folder or adjust paths accordingly

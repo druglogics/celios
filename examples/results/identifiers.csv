@@ -1,0 +1,5 @@
+input_cell_line_name,input_identifier,detected_type,status,SIDM,matched_on,source,CVCL,RRID,ACH,all_aliases
+COLO-205,CVCL_0218,cvcl,resolved,SIDM00826,cvcl,sanger,CVCL_0218,,,ACH-001039; CVCL_0218; RRID:CVCL_0218; SIDM00826
+HT-29,CVCL_0320,cvcl,resolved,SIDM00136,cvcl,sanger,CVCL_0320,,,ACH-000552; CVCL_0320; RRID:CVCL_0320; SIDM00136
+DLD1,CVCL_0248,cvcl,resolved,SIDM00787,cvcl,sanger,CVCL_0248,,,ACH-001061; CVCL_0248; RRID:CVCL_0248; SIDM00787
+SW620,CVCL_0547,cvcl,resolved,SIDM00841,cvcl,sanger,CVCL_0547,,,ACH-000651; CVCL_0547; RRID:CVCL_0547; SIDM00841

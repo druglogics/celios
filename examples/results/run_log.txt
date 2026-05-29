@@ -1,0 +1,100 @@
+Identified 5 input nodes and 10 output nodes.
+Mapping nodes to HGNC symbols (optimized) ...
+Nodes mapped to HGNC symbols successfully (total=2.685s)
+  HGNC load time: 0.755s, lookup build time: 1.930s
+  per-node mapping: mean=0.0000s median=0.0000s max=0.0001s
+  alias/prev expansion time: 0.0000s
+Number of missing nodes: 7
+Missing nodes: ['CyclinB_CDK1', 'CyclinD_CDK4_6', 'ERK_f', 'MEK_f', 'Proliferation', 'mTOR_c1', 'mTOR_c2']
+Keeping original node symbol if no HGNC symbol is found ...
+Original node symbol kept for missing HGNC symbols
+Manual override skipped for unknown node: CDKN1A
+Manual override applied for node: CyclinB_CDK1 -> ['CCNB1', 'CDK1']
+Manual override applied for node: CyclinD_CDK4_6 -> ['CCND1', 'CDK4', 'CDK6']
+Manual override skipped for unknown node: CyclinE_CDK2
+Manual override applied for node: ERK_f -> ['MAPK1', 'MAPK3']
+Manual override applied for node: MEK_f -> ['MAP2K1', 'MAP2K2']
+Manual override applied for node: mTOR_c1 -> ['AKT1S1', 'DEPTOR', 'MLST8', 'RPTOR', 'MTOR']
+Manual override applied for node: mTOR_c2 -> ['EEF1A1', 'DEPTOR', 'MLST8', 'PRR5', 'RICTOR', 'MTOR']
+Data saved to results\node_HGNC_dict.csv as CSV.
+Data saved to results\activity_master_matrix.csv as CSV.
+Data saved to results\activity_from_master.csv as CSV.
+VERBOSE LOG MESSAGES
+------------------------------------------------------
+ACTIVITY MATRIX RUN REPORT
+------------------------------------------------------
+
+VARIABLES
+
+Selected sources: ['mutations', 'cnv', 'TF', 'expression']
+
+Command: c:/Users/viviamsb/OneDrive - NTNU/PhD Folder/Pipeline/CELIOS/examples/celios_run_example.py
+Run time (seconds): 31.87
+
+NODE DICTIONARY
+
+Length of node dictionary: 20
+
+Node dictionary entries:
+AKT1: ['AKT1']
+CCND1: ['CCND1']
+CyclinB_CDK1: ['CCNB1', 'CDK1']
+CyclinD_CDK4_6: ['CCND1', 'CDK4', 'CDK6']
+ERK_f: ['MAPK1', 'MAPK3']
+FOXO3: ['FOXO3']
+GSK3B: ['GSK3B']
+IRS2: ['IRS2']
+JUN: ['JUN']
+LRP5: ['LRP5']
+MAP2K4: ['MAP2K4']
+MAP3K1: ['MAP3K1']
+MAPK8: ['MAPK8']
+MEK_f: ['MAP2K1', 'MAP2K2']
+MYC: ['MYC']
+PIK3CA: ['PIK3CA']
+Proliferation: ['Proliferation']
+STAT3: ['STAT3']
+mTOR_c1: ['AKT1S1', 'DEPTOR', 'MLST8', 'RPTOR', 'MTOR']
+mTOR_c2: ['EEF1A1', 'DEPTOR', 'MLST8', 'PRR5', 'RICTOR', 'MTOR']
+
+Nodes with missing HGNC_symbol entries: 0
+
+CELL LINES / SIDM LIST
+
+SIDM count: 4
+
+SIDM list (ordered):
+SIDM00826
+SIDM00136
+SIDM00787
+SIDM00841
+
+Cell line names (SIDM -> name):
+SIDM00826: COLO-205
+SIDM00136: HT-29
+SIDM00787: DLD1
+SIDM00841: SW620
+
+TRAINING DATA
+
+raw_shape: (19215, 1775)
+prep_shape: (19215, 3)
+norm_shape: (19215, 3)
+node_expr_shape: (20, 3)
+muts_shape: (20, 4)
+cnv_shape: (20, 3)
+tfm_shape: (3, 4)
+
+SOURCE COVERAGE
+
+expression: 3/4 SIDMs matched, 20 nodes, 3 SIDMs
+  Missing SIDMs (first 10): ['SIDM00826']
+TF: 4/4 SIDMs matched, 3 nodes, 4 SIDMs
+mutations: 4/4 SIDMs matched, 20 nodes, 4 SIDMs
+cnv: 3/4 SIDMs matched, 20 nodes, 3 SIDMs
+  Missing SIDMs (first 10): ['SIDM00787']
+
+Master matrix saved: results\activity_master_matrix.csv (shape=(20, 17))
+Final activity saved: results\activity_from_master.csv (shape=(20, 5))
+
+Nodes with all-missing values in final matrix: 0

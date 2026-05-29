@@ -1,0 +1,21 @@
+node_name,HGNC_symbol
+AKT1,['AKT1']
+CCND1,['CCND1']
+CyclinB_CDK1,"['CCNB1', 'CDK1']"
+CyclinD_CDK4_6,"['CCND1', 'CDK4', 'CDK6']"
+ERK_f,"['MAPK1', 'MAPK3']"
+FOXO3,['FOXO3']
+GSK3B,['GSK3B']
+IRS2,['IRS2']
+JUN,['JUN']
+LRP5,['LRP5']
+MAP2K4,['MAP2K4']
+MAP3K1,['MAP3K1']
+MAPK8,['MAPK8']
+MEK_f,"['MAP2K1', 'MAP2K2']"
+MYC,['MYC']
+PIK3CA,['PIK3CA']
+Proliferation,['Proliferation']
+STAT3,['STAT3']
+mTOR_c1,"['AKT1S1', 'DEPTOR', 'MLST8', 'RPTOR', 'MTOR']"
+mTOR_c2,"['EEF1A1', 'DEPTOR', 'MLST8', 'PRR5', 'RICTOR', 'MTOR']"
