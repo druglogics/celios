@@ -8,8 +8,8 @@ Get CELIOS running in **5 minutes**.
 
 ### **Step 1: Install**
 ```bash
-git clone https://github.com/yourusername/celios.git
-cd CELIOS
+git clone https://github.com/druglogics/celios.git
+cd celios
 pip install -e .
 ```
 
@@ -65,8 +65,9 @@ celios run --config celios_config.yaml --verbose
 | Need | File | Purpose |
 |------|------|---------|
 | **Installation help** | [INSTALL.md](INSTALL.md) | Detailed setup, troubleshooting, virtual environments |
-| **Project organization** | [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) | Code architecture, module descriptions, data flow |
-| **Full documentation** | [README.md](README.md) | Usage examples, API reference, input/output formats |
+| **Pipeline overview** | [PIPELINE.md](PIPELINE.md) | 3-step pipeline with detailed configuration options |
+| **Full documentation** | [USAGE.md](USAGE.md) | Full usage examples, API reference, input/output formats |
+| **Project organization** | [ARCHITECTURE.md](ARCHITECTURE.md) | Code architecture, module descriptions, data flow |
 | **Interactive tutorial** | `notebooks/1_select_visualize.ipynb` | Step-by-step notebook with visualization |
 
 ---
@@ -138,7 +139,6 @@ pytest tests/ --cov=celios
 | `paths.output` | str | ✓ | — | Output directory |
 | `paths.cellfiles_dir` | str | ✗ | — | Directory for per-cell-line training files (legacy mode) |
 | `paths.tissue_dir` | str | ✗ | — | Root directory for tissue-organized cell line folders |
-| `paths.tissue_dir` | str | ✗ | — | Root directory for tissue-organized cell line folders |
 | `steps.Node` | dict | ✗ | — | Network analysis step config (skip if using pre-built node_dic) |
 | `steps.Activity` | dict | ✓ | — | Activity extraction step config |
 | `steps.Activity.data_sources` | list | ✗ | ["mutations","cnv","TF","expression"] | Priority order for activity data |
@@ -183,10 +183,10 @@ See [INSTALL.md](INSTALL.md) for more troubleshooting.
 ## 🎯 Next Steps
 
 1. ✅ **Installed?** → Run your first analysis with the config above
-2. 📖 **Need details?** → Read [README.md](README.md) for API reference and examples
-3. 🔍 **Explore code?** → See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
+2. 📖 **Need details?** → Read [USAGE.md](USAGE.md) for API reference and examples
+3. 🔍 **Explore code?** → See [ARCHITECTURE.md](ARCHITECTURE.md)
 4. 📓 **Want visuals?** → Check `notebooks/1_select_visualize.ipynb`
 
 ---
 
-**Version:** 0.0.1 | **Status:** Active | **License:** See [LICENSE](LICENSE)
+**Version:** 0.1.0 | **Status:** Active | **License:** See [LICENSE](LICENSE)
