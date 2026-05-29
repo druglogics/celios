@@ -158,7 +158,7 @@ class TestOldBinaryMatrixParser:
 
 
 # ============================================================================
-# Test ModelIDBinaryMatrixParser (requires Model.csv)
+# Test ModelIDBinaryMatrixParser (with custom registry)
 # ============================================================================
 
 class TestModelIDBinaryMatrixParser:

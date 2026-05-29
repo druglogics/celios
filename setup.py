@@ -16,9 +16,6 @@ setup(
 	author_email='viviamsb@ntnu.no',
 	packages=find_packages(where="src"),
 	package_dir={"": "src"},
-	package_data={
-		"celios.features": ["Model.csv"],
-	},
 	include_package_data=True,
 	python_requires=">=3.8",
 	install_requires=[

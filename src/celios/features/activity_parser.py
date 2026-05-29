@@ -99,7 +99,7 @@ class ActivityParser(ABC):
 
     Output contract:
     - DataFrame index: gene symbols (uppercase, deduplicated)
-    - DataFrame columns: SIDM IDs (resolved from Model.csv if needed)
+    - DataFrame columns: SIDM IDs (resolved from online resolution if needed)
     - DataFrame values: expression levels (float)
     - metadata: dict with keys like {format, n_genes, n_samples, notes}
     """
@@ -192,7 +192,7 @@ class Format26Q1Parser(ActivityParser):
     - Row 1: single header with SequencingID, ModelConditionID, ModelID, IsDefault*, then gene columns
     - Gene columns: "GENE_NAME (ENTREZ_ID)" format, e.g., "TSPAN6 (7105)"
     - Rows 2+: data with index, metadata columns, then expression values
-    - Cell identification: ModelID (ACH-XXXXXX) must be mapped to SIDM via Model.csv
+    - Cell identification: ModelID (ACH-XXXXXX) is resolved to SIDM via online resolver
     """
 
     def load(self, filepath: str) -> Tuple[pd.DataFrame, Dict]:
@@ -248,13 +248,10 @@ class Format26Q1Parser(ActivityParser):
         df_genes.columns = gene_symbols
 
         # Now rename columns from ModelID to SIDM
-        # This requires external mapping via Model.csv
+        # This requires external mapping via online resolution (Sanger/Cellosaurus APIs)
         # For now, use ModelID as column names; will be mapped during ActivityMatrix._ensure_sidm()
-        # Or: we can import and use load_sidm_from_model_csv here
-
-        # SIDM mapping is intentionally deferred to the training layer where
-        # cell_line_file identifiers are resolved in one place. Doing API lookups
-        # here would add large parsing overhead for big expression matrices.
+        # SIDM resolution is deferred to the training layer where cell_line_file identifiers 
+        # are resolved in one place. Online API lookups happen there, not during parsing.
         metadata["sidm_mapping"] = {}
         metadata["unmapped_model_ids"] = []
 

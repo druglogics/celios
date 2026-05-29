@@ -119,7 +119,8 @@ class BinaryMatrixParser(ABC):
 
         Args:
             filepath: Path to binary matrix file
-            model_registry: Path to Model.csv registry (for ModelID→SIDM mapping)
+            model_registry: Optional path to custom ModelID→SIDM registry CSV (expert use only; 
+                           online resolution via Sanger/Cellosaurus APIs is used by default)
 
         Returns:
             Tuple of:

@@ -94,9 +94,8 @@ def load_node_dict_from_csv(file_path, verbose=False):
 def load_sidm_from_model_csv(cell_line_names, verbose=False):
 	"""Load SIDM mapping for user-provided identifiers.
 	
-	This compatibility helper keeps the historical function name but now resolves
-	identifiers through the online resolver (Sanger API primary, Cellosaurus
-	fallback) instead of direct local Model.csv lookups.
+	Resolves identifiers through the online resolver (Sanger API primary, 
+	Cellosaurus fallback). Function name retained for backwards compatibility.
 	
 	Args:
 		cell_line_names (list): List of identifiers from user's cell_line_file.
@@ -117,18 +116,18 @@ def load_sidm_from_model_csv(cell_line_names, verbose=False):
 			if result.status == "resolved":
 				report_mod.add_log(f"Matched '{result.input_raw}' -> SIDM {result.sidm} ({result.matched_on})")
 			else:
-				report_mod.add_log(f"No match found for '{result.input_raw}' in Model.csv")
+				report_mod.add_log(f"No match found for '{result.input_raw}' via online resolution")
 	
 	if not sidm_dict:
 		raise ValueError(
-			f"No cell lines from the provided list could be found in Model.csv. "
+			f"No cell lines from the provided list could be resolved. "
 			f"Not found: {', '.join(not_found)}. "
 			f"Please check your cell_line_file names or provide a 'SIDM' column explicitly."
 		)
 	
 	if not_found and verbose:
 		report_mod.add_log(
-			f"Warning: {len(not_found)} cell line(s) not found in Model.csv and will be excluded: {', '.join(not_found)}"
+			f"Warning: {len(not_found)} cell line(s) could not be resolved and will be excluded: {', '.join(not_found)}"
 		)
 	
 	return sidm_dict, not_found
@@ -143,7 +142,7 @@ def load_sidm_from_modelid(model_ids, model_registry=None, verbose=False):
 
 	Args:
 		model_ids (list): List of ModelID values (e.g., ['ACH-000001', 'ACH-000002', ...])
-		model_registry (str): Kept for backward compatibility; currently unused.
+		model_registry (str): Kept for backward compatibility; currently unused (online resolution is used).
 		verbose (bool): If True, log detailed matching results.
 
 	Returns:
@@ -162,18 +161,18 @@ def load_sidm_from_modelid(model_ids, model_registry=None, verbose=False):
 			if normalized in model_to_sidm:
 				report_mod.add_log(f"Matched ModelID '{normalized}' -> SIDM {model_to_sidm[normalized]}")
 			else:
-				report_mod.add_log(f"No match found for ModelID '{normalized}' in Model.csv")
+				report_mod.add_log(f"No match found for ModelID '{normalized}' via online resolution")
 	
 	if not model_to_sidm:
 		raise ValueError(
-			f"No ModelID values from the provided list could be found in Model.csv. "
+			f"No ModelID values from the provided list could be resolved. "
 			f"Not found: {', '.join(not_found)}. "
 			f"Please check your ModelID values."
 		)
 	
 	if not_found and verbose:
 		report_mod.add_log(
-			f"Warning: {len(not_found)} ModelID(s) not found in Model.csv and will be excluded: {', '.join(not_found)}"
+			f"Warning: {len(not_found)} ModelID(s) could not be resolved and will be excluded: {', '.join(not_found)}"
 		)
 	
 	return model_to_sidm, not_found
