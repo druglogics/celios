@@ -182,6 +182,89 @@ def get_omics(
     )
 
 
+def get_identifiers(
+    config: Dict[str, Any],
+    verbose: bool = True,
+) -> Dict[str, object]:
+    """Step 2: Resolve cell line identifiers and save mapping.
+    
+    Args:
+        config: Pipeline configuration dict.
+        verbose: Print status messages.
+    
+    Returns:
+        Dictionary with keys: sidm_list, sidm_dict, alias_to_sidm
+    """
+    cfg = _build_config(config)
+    
+    # Resolve paths using same logic as get_omics()
+    base = Path(cfg.get("paths", {}).get("base", ".")).expanduser().resolve()
+    input_path = Path(cfg.get("paths", {}).get("input", base / "input")).expanduser()
+    output_path_config = cfg.get("paths", {}).get("output")
+    output_path = Path(output_path_config).expanduser() if output_path_config else None
+    
+    # Resolve cell_line_file from Activity config
+    act_cfg = cfg.get("steps", {}).get("Activity", {}) or {}
+    cell_line_cfg = act_cfg.get("cell_line_file")
+    
+    resolved_cell_line_path = None
+    if isinstance(cell_line_cfg, (str,)) and cell_line_cfg:
+        p = Path(cell_line_cfg)
+        if p.is_absolute():
+            resolved_cell_line_path = str(p)
+        else:
+            resolved_cell_line_path = str((input_path / cell_line_cfg).resolve())
+    else:
+        resolved_cell_line_path = cell_line_cfg
+    
+    if verbose:
+        print(f"[Activity] Cell line identifier resolution:")
+        print(f"  Configured cell_line_file: {cell_line_cfg}")
+        print(f"  Resolved cell_line_file: {resolved_cell_line_path}")
+        print(f"  Output directory: {output_path}")
+    
+    # Create output directory if needed
+    if output_path:
+        output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Resolve cell lines - use cline_resolve directly to get resolution_report
+    from .features.cline import resolve_cell_lines as cline_resolve
+    from .utils.cell_line_resolver import save_identifier_mapping
+    from .utils import load_csv_file
+    
+    sidm_list, sidm_dict, alias_map, resolution_report = cline_resolve(
+        cell_line_file=resolved_cell_line_path,
+        verbose=verbose,
+    )
+    
+    resolved_cell_lines = {
+        "sidm_list": sidm_list,
+        "sidm_dict": sidm_dict,
+        "alias_to_sidm": alias_map or {},
+    }
+    
+    # Save identifiers.csv if we have output directory and all needed data
+    if output_path and resolved_cell_line_path:
+        try:
+            df = load_csv_file(resolved_cell_line_path)
+            output_file = output_path / "identifiers.csv"
+            
+            success = save_identifier_mapping(
+                df,
+                resolution_report,
+                alias_map or {},
+                str(output_file),
+                verbose=False,
+            )
+            if success and verbose:
+                print(f"[STEP 2] Saved identifier mapping: {output_file}")
+        except Exception as e:
+            if verbose:
+                print(f"[STEP 2] Warning: Could not save identifier mapping: {e}")
+    
+    return resolved_cell_lines
+
+
 def _validate_stop_after(stop_after: Optional[str]) -> None:
     if stop_after is None:
         return
@@ -483,29 +566,11 @@ def run_celios(
         raise ValueError("No node dictionary source found. Either define 'steps.Node' in config or provide 'node_dic' in 'steps.Activity'")
 
     # 2) Find and resolve cell line identifiers
-    cell_line_cfg = cfg.get("steps", {}).get("Activity", {}).get("cell_line_file")
-    # Resolve configured path against pipeline paths (base/input) same as get_omics
-    base = Path(cfg.get("paths", {}).get("base", ".")).expanduser().resolve()
-    input_path = Path(cfg.get("paths", {}).get("input", base / "input")).expanduser()
-    resolved_cell_line_path = None
-    if isinstance(cell_line_cfg, (str,)) and cell_line_cfg:
-        p = Path(cell_line_cfg)
-        if p.is_absolute():
-            resolved_cell_line_path = str(p)
-        else:
-            resolved_cell_line_path = str((input_path / cell_line_cfg).resolve())
-    else:
-        resolved_cell_line_path = cell_line_cfg
-
     if verbose:
         print("\n\nSTEP 2: Resolving cell line identifiers")
-        print(f"Configured cell_line_file: {cell_line_cfg}")
-        print(f"Resolved cell_line_file: {resolved_cell_line_path}")
-
-    resolved_cell_lines = None
+    
     try:
-        from .features.training import resolve_cell_lines
-        resolved_cell_lines = resolve_cell_lines(cell_line_file=resolved_cell_line_path, verbose=verbose)
+        resolved_cell_lines = get_identifiers(config, verbose=verbose)
         if verbose:
             print("[PIPELINE] Step 2 summary:")
             print(f"  SIDMs resolved: {len(resolved_cell_lines.get('sidm_list') or [])}")
